@@ -1,6 +1,6 @@
 {
   "productName": "Qoder Switch",
-  "version": "2.2.0",
+  "version": "2.3.0",
   "identifier": "com.qoder.proxy",
   "build": {
     "frontendDist": "../dist",

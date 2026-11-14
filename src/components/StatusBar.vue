@@ -9,37 +9,79 @@
       <button @click="checkUpdate" class="text-blue-400 text-xs hover:text-blue-300 transition">检测更新</button>
     </div>
 
-    <div class="flex items-center gap-6">
-      <!-- IDE 状态 -->
-      <div class="flex items-center gap-2">
-        <span class="w-2.5 h-2.5 rounded-full" :class="store.status?.ide_running ? 'bg-green-500' : 'bg-gray-500'"></span>
-        <span class="text-gray-400 text-xs">Qoder IDE</span>
-        <span class="text-xs" :class="store.status?.ide_running ? 'text-green-400' : 'text-gray-500'">
-          {{ store.status?.ide_running ? '运行中' : '未运行' }}
+    <div class="flex items-center gap-5">
+      <!-- 两个发行版本各自的运行状态 + 快捷重启 -->
+      <div v-for="ide in ides" :key="ide.key" class="flex items-center gap-1.5">
+        <span class="text-gray-400 text-xs">{{ ide.name }}</span>
+        <span class="w-2 h-2 rounded-full" :class="ide.running ? 'bg-green-500' : 'bg-gray-600'"></span>
+        <span class="text-xs" :class="ide.running ? 'text-green-400' : 'text-gray-500'">
+          {{ ide.installed ? (ide.running ? '运行中' : '未运行') : '未安装' }}
         </span>
+        <button
+          v-if="ide.installed"
+          @click="restart(ide.key, ide.name, ide.running)"
+          :disabled="busy !== null"
+          class="text-blue-400 text-xs hover:text-blue-300 disabled:opacity-40 ml-0.5"
+        >{{ busy === ide.key ? '处理中…' : (ide.running ? '重启' : '启动') }}</button>
       </div>
+
       <!-- 当前账号 -->
       <div class="flex items-center gap-2">
         <span class="text-gray-400 text-xs">当前账号</span>
-        <span class="text-xs text-blue-400">{{ store.status?.current_label || '未选择' }}</span>
+        <span class="text-xs text-blue-400 max-w-[150px] truncate">{{ store.status?.current_label || '未选择' }}</span>
       </div>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { getVersion } from '@tauri-apps/api/app'
 import { useAppStore } from '../stores/app'
+import type { IdeKind } from '../types'
 
 const store = useAppStore()
-const appVersion = ref('2.0.0')
+const appVersion = ref('2.3.0')
+const busy = ref<IdeKind | null>(null)
+
+const ides = computed(() => [
+  {
+    key: 'cn' as IdeKind,
+    name: 'Qoder CN',
+    installed: !!store.status?.ide_cn_installed,
+    running: !!store.status?.ide_cn_running,
+  },
+  {
+    key: 'intl' as IdeKind,
+    name: 'Qoder',
+    installed: !!store.status?.ide_intl_installed,
+    running: !!store.status?.ide_intl_running,
+  },
+])
 
 onMounted(async () => {
   try {
     appVersion.value = await getVersion()
   } catch {}
 })
+
+async function restart(kind: IdeKind, name: string, running: boolean) {
+  if (busy.value) return
+  const tip = running
+    ? `将退出 ${name} 并重新打开。\n未保存的编辑器内容可能丢失，确定继续？`
+    : `将启动 ${name}，确定继续？`
+  if (!confirm(tip)) return
+  busy.value = kind
+  try {
+    const r = await store.restartIde(kind)
+    if (!r.launched) alert(r.message)
+  } catch (e: any) {
+    const msg = typeof e === 'string' ? e : (e?.message || JSON.stringify(e))
+    alert('操作失败: ' + msg)
+  } finally {
+    busy.value = null
+  }
+}
 
 async function checkUpdate() {
   alert(`当前版本 v${appVersion.value}，自动更新将在后续版本启用`)

@@ -18,7 +18,22 @@ export interface AppStatus {
   current_account_id: string | null
   current_label: string | null
   ide_running: boolean
+  ide_cn_running: boolean
+  ide_cn_installed: boolean
+  ide_intl_running: boolean
+  ide_intl_installed: boolean
   usage_url: string
+}
+
+/** Qoder 的两个发行版本 */
+export type IdeKind = 'cn' | 'intl'
+
+export interface RestartResult {
+  kind: string
+  was_running: boolean
+  stopped: boolean
+  launched: boolean
+  message: string
 }
 
 export interface QuotaResult {

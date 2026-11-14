@@ -49,6 +49,8 @@ pub fn run() {
             commands::account_cmd::import_local_account,
             commands::backup_cmd::export_accounts,
             commands::backup_cmd::import_accounts,
+            commands::ide_cmd::get_ide_status,
+            commands::ide_cmd::restart_ide,
             commands::quota_cmd::check_quota,
             commands::quota_cmd::check_all_quotas,
             commands::app_cmd::get_app_status,

@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { invoke } from '@tauri-apps/api/core'
-import type { AccountToken, AppStatus, QuotaResult, LocalAccountInfo, SwitchInfo, ExportResult, ImportResult } from '../types'
+import type { AccountToken, AppStatus, QuotaResult, LocalAccountInfo, SwitchInfo, ExportResult, ImportResult, IdeKind, RestartResult } from '../types'
 
 export const USAGE_PAGE_URL = 'https://qoder.cn/account/usage'
 
@@ -71,6 +71,13 @@ export const useAppStore = defineStore('app', {
       } finally {
         this.checkingAll = false
       }
+    },
+    async restartIde(kind: IdeKind): Promise<RestartResult> {
+      const result = await invoke<RestartResult>('restart_ide', { kind })
+      // 退出/启动有延迟，给系统一点时间再刷新运行状态
+      await new Promise(r => setTimeout(r, 600))
+      await this.fetchStatus()
+      return result
     },
     async openExternal(url: string) {
       await invoke('open_external', { url })

@@ -11,6 +11,10 @@ pub struct AppStatus {
     pub current_account_id: Option<String>,
     pub current_label: Option<String>,
     pub ide_running: bool,
+    pub ide_cn_running: bool,
+    pub ide_cn_installed: bool,
+    pub ide_intl_running: bool,
+    pub ide_intl_installed: bool,
     pub usage_url: String,
 }
 
@@ -18,11 +22,17 @@ pub struct AppStatus {
 pub async fn get_app_status(state: State<'_, AppState>) -> AppResult<AppStatus> {
     let accounts = state.token_manager.list().await;
     let current = accounts.iter().find(|a| a.status == "current");
+    let cn_running = crate::process::is_running(crate::process::IdeKind::Cn);
+    let intl_running = crate::process::is_running(crate::process::IdeKind::Intl);
     Ok(AppStatus {
         account_count: accounts.len(),
         current_account_id: current.map(|a| a.id.clone()),
         current_label: current.map(|a| a.label.clone()),
-        ide_running: crate::process::is_qoder_ide_running(),
+        ide_running: cn_running || intl_running,
+        ide_cn_running: cn_running,
+        ide_cn_installed: crate::process::is_installed(crate::process::IdeKind::Cn),
+        ide_intl_running: intl_running,
+        ide_intl_installed: crate::process::is_installed(crate::process::IdeKind::Intl),
         usage_url: USAGE_PAGE_URL.to_string(),
     })
 }

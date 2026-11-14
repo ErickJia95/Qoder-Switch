@@ -6,7 +6,7 @@
         <h2 class="text-white font-semibold text-sm">账号列表</h2>
         <span class="text-blue-400 text-xs">{{ accounts.length }}</span>
       </div>
-      <span class="text-gray-500 text-xs">「接入」只标记当前使用账号，身份切换需在 Qoder IDE 内重新登录</span>
+      <span class="text-gray-500 text-xs">「接入」可标记当前账号，并顺手重启 Qoder CN / Qoder</span>
     </div>
 
     <!-- 表格区域 -->
@@ -62,31 +62,34 @@
         暂无账号，请点击上方「读取当前登录账号」导入
       </div>
     </div>
+
+    <SwitchDialog
+      :open="dialogOpen"
+      :account="activeAccount"
+      @close="dialogOpen = false"
+      @done="onSwitched"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { useAppStore } from '../stores/app'
+import SwitchDialog from './SwitchDialog.vue'
 import type { AccountToken } from '../types'
 
 const store = useAppStore()
 const accounts = computed(() => store.accounts)
+const dialogOpen = ref(false)
+const activeAccount = ref<AccountToken | null>(null)
 
-async function handleSwitch(account: AccountToken) {
-  try {
-    const info = await store.switchAccount(account.id)
-    const email = info.email || account.email || ''
-    alert(
-      `已标记为当前账号：${info.label}\n\n` +
-      `如需在 Qoder IDE 中使用该账号：\n` +
-      `1. 在 IDE 里退出当前账号\n` +
-      `2. 用 ${email || '该账号'} 登录\n` +
-      `3. 登录后回到这里点「读取当前登录账号」刷新凭证`
-    )
-  } catch (e: any) {
-    alert('接入失败: ' + (e?.message || e))
-  }
+function handleSwitch(account: AccountToken) {
+  activeAccount.value = account
+  dialogOpen.value = true
+}
+
+function onSwitched(message: string) {
+  alert(message + '\n\n记得在 IDE 里用该账号登录，登录后回到这里点「读取当前登录账号」刷新凭证。')
 }
 
 async function handleCheckQuota(id: string) {
