@@ -2,7 +2,10 @@
 use std::path::PathBuf;
 
 fn main() {
-    let db_path = PathBuf::from(std::env::var("APPDATA").unwrap())
+    let home = std::env::var("HOME").expect("HOME 未设置");
+    let db_path = PathBuf::from(home)
+        .join("Library")
+        .join("Application Support")
         .join("Qoder")
         .join("User")
         .join("globalStorage")

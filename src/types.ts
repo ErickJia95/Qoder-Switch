@@ -5,47 +5,20 @@ export interface AccountToken {
   user_id: string
   email: string
   name: string
-  status: string // "available" | "current" | "expired" | "error"
+  status: string // "available" | "current"
   user_type: string
   expire_date: string
   quota_used?: number | null
   quota_total?: number | null
 }
 
-export interface ProxyStatus {
-  running: boolean
-  port: number
-  auto_rotate: boolean
-  token_count: number
-  current_token_id: string | null
-  cert_installed: boolean
-}
-
-export interface MetricsSnapshot {
-  total_requests: number
-  intercepted: number
-  passthrough: number
-  auth_failures: number
-  rotations: number
-  bytes_proxied: number
-  uptime_seconds: number
-  intercept_rate: number
-}
-
-export interface RequestLogEntry {
-  id: number
-  timestamp: string
-  method: string
-  host: string
-  path: string
-  status: number | null
-  injected: boolean
-  token_label: string | null
-  request_headers: string | null
-  request_body: string | null
-  response_headers: string | null
-  response_body: string | null
-  is_websocket: boolean
+/** 应用状态（不含任何代理/证书信息） */
+export interface AppStatus {
+  account_count: number
+  current_account_id: string | null
+  current_label: string | null
+  ide_running: boolean
+  usage_url: string
 }
 
 export interface QuotaResult {
@@ -57,78 +30,44 @@ export interface QuotaResult {
   quota_total: number
   quota_remaining: number
   quota_unit: string
+  usage_percentage: number
   is_exceeded: boolean
   expire_date: string
+  api_base: string
   error: string | null
 }
 
-export interface ProxyConfig {
-  port: number
-  target_domains: string[]
-  auto_rotate: boolean
-  rotate_strategy: 'Sequential' | 'Random' | 'Priority' | 'LeastUsed' | 'ByExpiry'
-  auto_start: boolean
-  max_retry: number
-  language: string
-  account_pool_url: string
-  balance_threshold: number
-}
-
-export interface FetchedAccount {
-  user_id: string
-  token: string
-  name: string
+export interface SwitchInfo {
+  id: string
+  label: string
   email: string
-  user_type: string
-  expire_date: string
-  machine_token: string
-  machine_id: string
 }
 
-export interface ChatHistory {
-  id: string
-  title: string
-  context: Array<{ id: string; name: string; type: string }>
-  timestamp: number
-  session_id: string
-  sessionId?: string
-}
-
-export interface WorkspaceInfo {
-  id: string
+/** 从本机 Qoder IDE 登录态导入的账号信息 */
+export interface LocalAccountInfo {
+  label: string
+  user_id: string
   name: string
-  path: string
+  expires_at: string
+  updated: boolean
 }
 
-export interface SessionBackup {
-  backupTime: string
-  workspaceId: string
-  workspacePath: string
-  userId: string
-  chatHistory: ChatHistory[]
-  chatViews: any
-  chatTabs: any
+/** 导出备份的结果 */
+export interface ExportResult {
+  saved: boolean
+  path: string | null
+  count: number
+  bytes: number
+  includes_tokens: boolean
 }
 
-export interface BackupFileInfo {
-  file_path: string
-  file_name: string
-  backup_time: string
-  workspace_id: string
-  workspace_path: string
-  file_size: number
-}
-
-export interface MergeResult {
-  merged: number
+/** 从备份导入的结果 */
+export interface ImportResult {
+  imported: boolean
+  path: string | null
+  added: number
+  updated: number
   skipped: number
-  target_total: number
-  source_backup: string
-  target_backup: string
-}
-
-export interface DeleteWorkspaceResult {
-  backup_path: string
-  dir_deleted: boolean
-  chat_key_deleted: boolean
+  total: number
+  restored_current: string | null
 }

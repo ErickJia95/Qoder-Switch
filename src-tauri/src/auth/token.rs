@@ -1,13 +1,10 @@
 use aes_gcm::{Aes256Gcm, AeadCore, aead::{Aead, KeyInit, OsRng}};
 use aes_gcm::aead::generic_array::GenericArray;
-use rand::Rng;
 use serde::{Serialize, Deserialize};
 use sha2::{Sha256, Digest};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-
-use crate::config::RotateStrategy;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AccountToken {
@@ -51,107 +48,6 @@ impl TokenManager {
         }
     }
 
-    pub async fn get_current(&self) -> Option<AccountToken> {
-        let accounts = self.accounts.read().await;
-        let idx = *self.current.read().await;
-        accounts.get(idx).cloned()
-    }
-
-    pub async fn rotate(&self) -> Option<String> {
-        self.rotate_with_strategy(RotateStrategy::Sequential).await
-    }
-
-    pub async fn rotate_with_strategy(&self, strategy: RotateStrategy) -> Option<String> {
-        let mut accounts = self.accounts.write().await;
-        let mut current = self.current.write().await;
-
-        if accounts.is_empty() {
-            return None;
-        }
-
-        let next_idx = match strategy {
-            RotateStrategy::Sequential => {
-                (*current + 1) % accounts.len()
-            }
-            RotateStrategy::Random => {
-                if accounts.len() <= 1 { 0 } else {
-                    let mut rng = rand::thread_rng();
-                    let mut idx = rng.gen_range(0..accounts.len());
-                    // 避免选到当前的
-                    while idx == *current && accounts.len() > 1 {
-                        idx = rng.gen_range(0..accounts.len());
-                    }
-                    idx
-                }
-            }
-            RotateStrategy::Priority => {
-                // 选择列表中下一个可用的（按顺序优先）
-                let mut idx = (*current + 1) % accounts.len();
-                for _ in 0..accounts.len() {
-                    if accounts[idx].status != "expired" {
-                        break;
-                    }
-                    idx = (idx + 1) % accounts.len();
-                }
-                idx
-            }
-            RotateStrategy::LeastUsed | RotateStrategy::ByExpiry => {
-                // 这两种策略需要额外信息，暂时 fallback 到 Sequential
-                (*current + 1) % accounts.len()
-            }
-        };
-
-        *current = next_idx;
-        accounts[next_idx].status = "current".to_string();
-        // 将旧的标记回 available
-        for (i, acc) in accounts.iter_mut().enumerate() {
-            if i != next_idx && acc.status == "current" {
-                acc.status = "available".to_string();
-            }
-        }
-
-        let id = accounts[next_idx].id.clone();
-        drop(accounts);
-        drop(current);
-        let _ = self.save().await;
-        Some(id)
-    }
-
-    /// 查找并切换到第一个余额 >= threshold 的账号
-    /// 如果找不到满足条件的账号，不切换（保持当前）
-    pub async fn rotate_to_sufficient_balance(&self, threshold: u64) -> Option<String> {
-        let mut accounts = self.accounts.write().await;
-        let mut current = self.current.write().await;
-        
-        if accounts.is_empty() { return None; }
-        
-        let len = accounts.len();
-        let start = (*current + 1) % len;
-        
-        for i in 0..len {
-            let idx = (start + i) % len;
-            if idx == *current { continue; }
-            
-            let acc = &accounts[idx];
-            if acc.status == "expired" { continue; }
-            
-            let remaining = acc.quota_total.unwrap_or(u64::MAX)
-                .saturating_sub(acc.quota_used.unwrap_or(0));
-            if remaining >= threshold {
-                // 找到满足条件的账号，切换
-                accounts[*current].status = "available".to_string();
-                *current = idx;
-                accounts[idx].status = "current".to_string();
-                let id = accounts[idx].id.clone();
-                drop(accounts);
-                drop(current);
-                let _ = self.save().await;
-                return Some(id);
-            }
-        }
-        None // 没有找到余额充足的账号
-    }
-
     pub async fn add(&self, token: String, label: String, user_id: String, email: String, name: String, user_type: String, expire_date: String) {
         let id = format!("tok_{:x}", chrono::Utc::now().timestamp_millis());
         let entry = AccountToken {
@@ -179,33 +75,40 @@ impl TokenManager {
         }
     }
 
-    pub async fn update_machine_info(&self, id: &str, machine_token: String, machine_id: String, machine_code: String, machine_type: String) {
-        let mut accounts = self.accounts.write().await;
-        if let Some(account) = accounts.iter_mut().find(|a| a.id == id) {
-            account.machine_token = machine_token;
-            account.machine_id = machine_id;
-            account.machine_code = machine_code;
-            account.machine_type = machine_type;
-        }
-        drop(accounts);
-        let _ = self.save().await;
-    }
-
-    pub async fn bulk_add(&self, tokens_str: &str) {
-        let tokens: Vec<&str> = tokens_str.split_whitespace().collect();
-        for (i, t) in tokens.iter().enumerate() {
-            if !t.is_empty() {
-                self.add(
-                    t.to_string(),
-                    format!("Token #{}", i + 1),
-                    String::new(),
-                    String::new(),
-                    String::new(),
-                    String::new(),
-                    String::new(),
-                ).await;
+    /// 按 user_id 更新已有账号的凭证；若不存在则新增。
+    /// 返回 true 表示更新了已有账号，false 表示新增。
+    pub async fn upsert(
+        &self,
+        token: String,
+        label: String,
+        user_id: String,
+        email: String,
+        name: String,
+        expire_date: String,
+    ) -> bool {
+        {
+            let mut accounts = self.accounts.write().await;
+            if !user_id.is_empty() {
+                if let Some(a) = accounts.iter_mut().find(|a| a.user_id == user_id) {
+                    a.token = token;
+                    a.label = label;
+                    a.email = email;
+                    a.name = name;
+                    if !expire_date.is_empty() {
+                        a.expire_date = expire_date;
+                    }
+                    // 凭证已变，旧的额度缓存作废
+                    a.quota_used = None;
+                    a.quota_total = None;
+                    a.status = "available".to_string();
+                    drop(accounts);
+                    let _ = self.save().await;
+                    return true;
+                }
             }
         }
+        self.add(token, label, user_id, email, name, String::new(), expire_date).await;
+        false
     }
 
     pub async fn update_account_info(&self, id: &str, user_type: String, expire_date: String) {
@@ -226,6 +129,105 @@ impl TokenManager {
         }
         drop(accounts);
         let _ = self.save().await;
+    }
+
+    /// 批量合并导入的账号（用于从 JSON 备份恢复）。
+    /// 匹配顺序：user_id → id → email；命中则更新（只覆盖备份里非空字段），否则新增。
+    /// 没有 token 且库中不存在的新账号无法使用，计入 skipped。
+    /// 返回 (新增数, 更新数, 跳过数)。
+    pub async fn merge_accounts(&self, incoming: Vec<AccountToken>) -> (usize, usize, usize) {
+        let mut added = 0usize;
+        let mut updated = 0usize;
+        let mut skipped = 0usize;
+
+        {
+            let mut accounts = self.accounts.write().await;
+            for inc in incoming {
+                let pos = if !inc.user_id.is_empty() {
+                    accounts.iter().position(|a| a.user_id == inc.user_id)
+                } else {
+                    None
+                }
+                .or_else(|| {
+                    if inc.id.is_empty() {
+                        None
+                    } else {
+                        accounts.iter().position(|a| a.id == inc.id)
+                    }
+                })
+                .or_else(|| {
+                    if inc.email.is_empty() {
+                        None
+                    } else {
+                        accounts.iter().position(|a| a.email == inc.email)
+                    }
+                });
+
+                match pos {
+                    Some(i) => {
+                        let a = &mut accounts[i];
+                        if !inc.token.is_empty() {
+                            a.token = inc.token.clone();
+                        }
+                        if !inc.label.is_empty() {
+                            a.label = inc.label.clone();
+                        }
+                        if !inc.name.is_empty() {
+                            a.name = inc.name.clone();
+                        }
+                        if !inc.email.is_empty() {
+                            a.email = inc.email.clone();
+                        }
+                        if !inc.user_id.is_empty() {
+                            a.user_id = inc.user_id.clone();
+                        }
+                        if !inc.user_type.is_empty() {
+                            a.user_type = inc.user_type.clone();
+                        }
+                        if !inc.expire_date.is_empty() {
+                            a.expire_date = inc.expire_date.clone();
+                        }
+                        if inc.quota_used.is_some() {
+                            a.quota_used = inc.quota_used;
+                        }
+                        if inc.quota_total.is_some() {
+                            a.quota_total = inc.quota_total;
+                        }
+                        updated += 1;
+                    }
+                    None => {
+                        if inc.token.is_empty() {
+                            skipped += 1;
+                            continue;
+                        }
+                        let mut entry = inc;
+                        if entry.id.is_empty() {
+                            entry.id = format!("tok_{:x}", chrono::Utc::now().timestamp_micros());
+                        }
+                        entry.status = "available".to_string();
+                        accounts.push(entry);
+                        added += 1;
+                    }
+                }
+            }
+        }
+
+        if let Err(e) = self.save().await {
+            log::warn!("保存账号失败: {}", e);
+        }
+        (added, updated, skipped)
+    }
+
+    /// 按 user_id / email / id 查找账号 id（导入后恢复「当前账号」标记用）
+    pub async fn find_id(&self, user_id: &str, email: &str) -> Option<String> {
+        if user_id.is_empty() && email.is_empty() {
+            return None;
+        }
+        let accounts = self.accounts.read().await;
+        accounts
+            .iter()
+            .find(|a| (!user_id.is_empty() && a.user_id == user_id) || (!email.is_empty() && a.email == email))
+            .map(|a| a.id.clone())
     }
 
     pub async fn remove(&self, id: &str) {
@@ -308,12 +310,12 @@ impl TokenManager {
     }
 
     /// 获取基于机器信息的加密密钥
+    /// 注意：保持此派生方式不变，否则已有的 proxy-tokens.json 将无法解密
     fn get_machine_key() -> [u8; 32] {
-        let machine_name = std::env::var("COMPUTERNAME")
-            .or_else(|_| std::env::var("HOSTNAME"))
+        // macOS GUI 启动时 HOSTNAME 通常未设置，回退到 default_host
+        let machine_name = std::env::var("HOSTNAME")
             .unwrap_or_else(|_| "default_host".to_string());
-        let user_name = std::env::var("USERNAME")
-            .or_else(|_| std::env::var("USER"))
+        let user_name = std::env::var("USER")
             .unwrap_or_else(|_| "default_user".to_string());
         let machine_id = format!("{}_{}", machine_name, user_name);
         let mut hasher = Sha256::new();

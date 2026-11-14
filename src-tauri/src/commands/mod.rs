@@ -1,6 +1,4 @@
-pub mod proxy_cmd;
 pub mod account_cmd;
-pub mod cert_cmd;
-pub mod chat_cmd;
-pub mod config_cmd;
+pub mod app_cmd;
+pub mod backup_cmd;
 pub mod quota_cmd;

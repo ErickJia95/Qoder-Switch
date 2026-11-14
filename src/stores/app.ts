@@ -1,176 +1,96 @@
 import { defineStore } from 'pinia'
 import { invoke } from '@tauri-apps/api/core'
-import type { AccountToken, ProxyStatus, MetricsSnapshot, RequestLogEntry, QuotaResult, ProxyConfig, ChatHistory, WorkspaceInfo, BackupFileInfo, MergeResult, DeleteWorkspaceResult } from '../types'
+import type { AccountToken, AppStatus, QuotaResult, LocalAccountInfo, SwitchInfo, ExportResult, ImportResult } from '../types'
 
-interface StructuredAccount {
-  token: string
-  label?: string
-  user_id?: string
-  email?: string
-  name?: string
-}
+export const USAGE_PAGE_URL = 'https://qoder.cn/account/usage'
 
 export const useAppStore = defineStore('app', {
   state: () => ({
     accounts: [] as AccountToken[],
-    status: null as ProxyStatus | null,
-    activeTab: 'metrics' as string,
-    loading: false,
-    metrics: null as MetricsSnapshot | null,
-    logs: [] as RequestLogEntry[],
+    status: null as AppStatus | null,
     quotas: [] as QuotaResult[],
-    discoveredDomains: [] as string[],
-    config: null as ProxyConfig | null,
-    chatWorkspaces: [] as WorkspaceInfo[],
-    currentWorkspaceId: '',
-    chatList: [] as ChatHistory[],
-    backupList: [] as BackupFileInfo[],
+    activeTab: 'accounts' as 'accounts' | 'usage',
+    importing: false,
+    checkingAll: false,
+    checkingIds: [] as string[],
   }),
+
+  getters: {
+    currentAccount(state): AccountToken | null {
+      return state.accounts.find(a => a.status === 'current') || null
+    },
+    hasAccounts(state): boolean {
+      return state.accounts.length > 0
+    },
+  },
 
   actions: {
     async fetchStatus() {
-      this.status = await invoke<ProxyStatus>('get_proxy_status')
+      this.status = await invoke<AppStatus>('get_app_status')
     },
     async fetchAccounts() {
       this.accounts = await invoke<AccountToken[]>('list_accounts')
     },
-    async fetchPoolAccount(secretKey: string) {
-      await invoke('fetch_pool_account', { secretKey })
-      await this.fetchAccounts()
-      await this.fetchStatus()
+    async refreshAll() {
+      await Promise.all([this.fetchAccounts(), this.fetchStatus()])
     },
-    async addAccounts(tokens: string) {
-      await invoke('add_accounts', { tokens })
-      await this.fetchAccounts()
-      await this.fetchStatus()
+    async importLocalAccount(): Promise<LocalAccountInfo> {
+      const info = await invoke<LocalAccountInfo>('import_local_account')
+      await this.refreshAll()
+      return info
     },
-    async addStructuredAccounts(accounts: StructuredAccount[]) {
-      const tokens = JSON.stringify(accounts)
-      await invoke('add_accounts', { tokens })
-      await this.fetchAccounts()
-      await this.fetchStatus()
+    async switchAccount(id: string): Promise<SwitchInfo> {
+      const info = await invoke<SwitchInfo>('switch_account', { id })
+      await this.refreshAll()
+      return info
     },
     async removeAccount(id: string) {
       await invoke('remove_account', { id })
-      await this.fetchAccounts()
+      this.quotas = this.quotas.filter(q => q.account_id !== id)
+      await this.refreshAll()
     },
-    async switchAccount(id: string) {
-      await invoke('switch_account', { id })
-      await this.fetchAccounts()
-      await this.fetchStatus()
-    },
-    async startProxy() {
-      await invoke('start_proxy')
-      await this.fetchStatus()
-    },
-    async stopProxy() {
-      await invoke('stop_proxy')
-      await this.fetchStatus()
-    },
-    async installCert() {
-      const confirmed = window.confirm(
-        '即将为当前用户安装 Qoder Proxy CA 根证书。\n\n' +
-        '影响范围：当前 Windows 用户下所有使用系统根证书的应用将信任此 CA。\n' +
-        '用途：仅用于本地代理 (127.0.0.1) 解密 HTTPS 流量。\n\n' +
-        '确定继续？'
-      )
-      if (!confirmed) return
-      await invoke('install_cert')
-      await this.fetchStatus()
-    },
-    async uninstallCert() {
-      await invoke('uninstall_cert')
-      await this.fetchStatus()
-    },
-    async toggleAutoRotate(enabled: boolean) {
-      await invoke('set_auto_rotate', { enabled })
-      await this.fetchStatus()
-    },
-    async fetchMetrics() {
-      this.metrics = await invoke<MetricsSnapshot>('get_metrics')
-    },
-    async resetMetrics() {
-      await invoke('reset_metrics')
-      this.metrics = await invoke<MetricsSnapshot>('get_metrics')
-    },
-    async fetchLogs(limit = 100) {
-      this.logs = await invoke<RequestLogEntry[]>('get_request_logs', { limit })
-    },
-    async checkAllQuotas() {
-      this.quotas = await invoke<QuotaResult[]>('check_all_quotas')
-    },
-    async fetchDomains() {
-      this.discoveredDomains = await invoke<string[]>('get_discovered_domains')
-    },
-    async setTargetDomains(domains: string[]) {
-      await invoke('set_target_domains', { domains })
-    },
-    async fetchConfig() {
-      this.config = await invoke<ProxyConfig>('get_config')
-    },
-    async updateConfig(config: ProxyConfig) {
-      await invoke('update_config', { config })
-      this.config = config
-    },
-    async fetchChatWorkspaces() {
-      this.chatWorkspaces = await invoke<WorkspaceInfo[]>('list_chat_workspaces')
-    },
-    async fetchWorkspaceChats(workspaceId: string) {
-      this.currentWorkspaceId = workspaceId
-      this.chatList = await invoke<ChatHistory[]>('get_workspace_chats', { workspaceId })
-    },
-    async searchChats(workspaceId: string, query: string) {
-      this.chatList = await invoke<ChatHistory[]>('search_workspace_chats', { workspaceId, query })
-    },
-    async deleteChats(workspaceId: string, chatIds: string[]) {
-      await invoke('delete_workspace_chats', { workspaceId, chatIds })
-      await this.fetchWorkspaceChats(workspaceId)
-    },
-    async backupWorkspace(workspaceId: string, savePath?: string) {
-      return await invoke<string>('backup_workspace_session', { workspaceId, savePath })
-    },
-    async restoreBackup(backupPath: string, targetWorkspaceId?: string) {
-      await invoke('restore_workspace_session', { 
-        workspaceId: targetWorkspaceId || null,
-        backupPath 
-      })
-      if (this.currentWorkspaceId) {
-        await this.fetchWorkspaceChats(this.currentWorkspaceId)
+    async checkQuota(id: string): Promise<QuotaResult> {
+      if (!this.checkingIds.includes(id)) this.checkingIds.push(id)
+      try {
+        const result = await invoke<QuotaResult>('check_quota', { id })
+        const idx = this.quotas.findIndex(q => q.account_id === id)
+        if (idx >= 0) this.quotas[idx] = result
+        else this.quotas.push(result)
+        await this.fetchAccounts()
+        return result
+      } finally {
+        this.checkingIds = this.checkingIds.filter(x => x !== id)
       }
     },
-    async fetchBackupList() {
-      this.backupList = await invoke<BackupFileInfo[]>('list_session_backups')
+    async checkAllQuotas() {
+      if (this.checkingAll) return
+      this.checkingAll = true
+      try {
+        this.quotas = await invoke<QuotaResult[]>('check_all_quotas')
+        await this.fetchAccounts()
+      } finally {
+        this.checkingAll = false
+      }
     },
-    async backupAllWorkspaces() {
-      return await invoke<string>('backup_all_workspaces')
+    async openExternal(url: string) {
+      await invoke('open_external', { url })
     },
-    async exportMarkdown() {
-      return await invoke<string>('export_chats_markdown')
+    async openUsagePage() {
+      await this.openExternal(USAGE_PAGE_URL)
     },
-    async deleteBackupFile(filePath: string) {
-      await invoke('delete_backup_file', { filePath })
-      await this.fetchBackupList()
+    async copyText(text: string) {
+      await invoke('copy_to_clipboard', { text })
     },
-    async rebuildSessionViews(workspaceId: string) {
-      await invoke('rebuild_session_views', { workspaceId })
+    async exportAccounts(includeTokens: boolean): Promise<ExportResult> {
+      return await invoke<ExportResult>('export_accounts', { includeTokens })
     },
-    async mergeWorkspaces(sourceId: string, targetId: string) {
-      return await invoke<MergeResult>('merge_workspace_chats', {
-        sourceWorkspaceId: sourceId,
-        targetWorkspaceId: targetId,
-      })
+    async importAccounts(restoreCurrent = true): Promise<ImportResult> {
+      const result = await invoke<ImportResult>('import_accounts', { restoreCurrent })
+      if (result.imported) await this.refreshAll()
+      return result
     },
-    async deleteWorkspace(workspaceId: string) {
-      return await invoke<DeleteWorkspaceResult>('delete_workspace', { workspaceId })
+    async revealPath(path: string) {
+      await invoke('reveal_path', { path })
     },
-    async killQoderIde() {
-      return await invoke<number>('kill_qoder_ide')
-    },
-    async launchQoderIde() {
-      await invoke('launch_qoder_ide')
-    },
-    async isQoderIdeRunning() {
-      return await invoke<boolean>('is_qoder_ide_running')
-    },
-  }
+  },
 })
