@@ -15,6 +15,24 @@ export interface AccountToken {
   can_activate: boolean
   /** 是否有完整登录数据（含 refreshToken）。缺失时切换会被后端拒绝（避免 IDE 校验清除导致掉登录） */
   has_full_credentials: boolean
+  /** 访问凭证的精确到期时间（ISO8601，取自 auth_blob；拿不到时为空） */
+  expires_at: string
+  /** 访问凭证是否即将过期（剩余不足 3 天） */
+  expiring_soon: boolean
+}
+
+/** 凭证刷新的单账号结果 */
+export interface RefreshOutcome {
+  account_id: string
+  label: string
+  /** refreshed = 本次换了新凭证 / skipped = 仍有效无需刷新 / failed = 刷新失败 */
+  status: 'refreshed' | 'skipped' | 'failed'
+  /** 刷新后访问凭证的精确到期时间（ISO8601） */
+  expires_at: string
+  expire_date: string
+  /** IDE 里的 auth.v1.dat 是否也同步写回 */
+  synced_to_ide: boolean
+  message: string
 }
 
 /** 应用状态（不含任何代理/证书信息） */
@@ -41,6 +59,16 @@ export interface RestartResult {
   message: string
 }
 
+/** 个人资源包（购买的一次性额度包） */
+export interface AddOnQuota {
+  total: number
+  used: number
+  remaining: number
+  percentage: number
+  unit: string
+  detail_url?: string
+}
+
 export interface QuotaResult {
   account_id: string
   label: string
@@ -53,6 +81,8 @@ export interface QuotaResult {
   usage_percentage: number
   is_exceeded: boolean
   expire_date: string
+  /** 个人资源包，未购买或接口未返回时为 null */
+  add_on_quota: AddOnQuota | null
   api_base: string
   error: string | null
 }

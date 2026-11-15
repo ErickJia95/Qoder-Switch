@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { invoke } from '@tauri-apps/api/core'
-import type { AccountToken, AppStatus, QuotaResult, LocalAccountInfo, SwitchInfo, ExportResult, ImportResult, IdeKind, RestartResult, ActivateInfo, CheckinResult } from '../types'
+import type { AccountToken, AppStatus, QuotaResult, LocalAccountInfo, SwitchInfo, ExportResult, ImportResult, IdeKind, RestartResult, ActivateInfo, CheckinResult, RefreshOutcome } from '../types'
 
 export const USAGE_PAGE_URL = 'https://qoder.cn/account/usage'
 
@@ -15,6 +15,9 @@ export const useAppStore = defineStore('app', {
     checkingIds: [] as string[],
     checkingIn: false,
     checkinDone: 0,
+    refreshingIds: [] as string[],
+    refreshingAll: false,
+    refreshDone: 0,
   }),
 
   getters: {
@@ -118,6 +121,31 @@ export const useAppStore = defineStore('app', {
       const result = await invoke<CheckinResult>('checkin_account', { id })
       await this.fetchAccounts()
       return result
+    },
+    /** 刷新单个账号的凭证；force=true 时即使还没到期也强制刷新 */
+    async refreshToken(id: string, force = true): Promise<RefreshOutcome> {
+      if (!this.refreshingIds.includes(id)) this.refreshingIds.push(id)
+      try {
+        const result = await invoke<RefreshOutcome>('refresh_token', { id, force })
+        await this.fetchAccounts()
+        return result
+      } finally {
+        this.refreshingIds = this.refreshingIds.filter(x => x !== id)
+      }
+    },
+    /** 批量刷新所有账号凭证（后端逐个串行，单个失败不中断） */
+    async refreshAllTokens(force = false): Promise<RefreshOutcome[]> {
+      if (this.refreshingAll) return []
+      this.refreshingAll = true
+      this.refreshDone = 0
+      try {
+        const results = await invoke<RefreshOutcome[]>('refresh_all_tokens', { force })
+        this.refreshDone = results.length
+        await this.fetchAccounts()
+        return results
+      } finally {
+        this.refreshingAll = false
+      }
     },
     async restoreAuthBackup(kind: IdeKind): Promise<{ kind: string; message: string }> {
       const r = await invoke<{ kind: string; message: string }>('restore_auth_backup', { kind })

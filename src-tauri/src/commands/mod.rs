@@ -4,3 +4,4 @@ pub mod backup_cmd;
 pub mod checkin_cmd;
 pub mod ide_cmd;
 pub mod quota_cmd;
+pub mod refresh_cmd;

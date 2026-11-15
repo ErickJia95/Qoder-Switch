@@ -47,6 +47,13 @@ fn to_result(account_id: String, label: String, outcome: Result<checkin::Checkin
 /// 对单个账号签到
 #[tauri::command]
 pub async fn checkin_account(state: State<'_, AppState>, id: String) -> AppResult<CheckinResult> {
+    // 凭证快过期就先刷新（失败不阻断签到）
+    if let Some(msg) =
+        crate::auth::session::ensure_fresh(&state.token_manager, &state.refresh_locks, &id).await
+    {
+        log::info!("[checkin] 签到前已自动刷新凭证: {}", msg);
+    }
+
     let accounts = state.token_manager.list().await;
     let account = accounts
         .iter()
@@ -64,7 +71,24 @@ pub async fn checkin_all(state: State<'_, AppState>) -> AppResult<Vec<CheckinRes
     let mut results = Vec::new();
 
     for account in &accounts {
-        let outcome = checkin::checkin(&account.token).await;
+        // 逐个账号签到前先兜底刷新（按账号加锁，不会并发轮换）
+        if let Some(msg) = crate::auth::session::ensure_fresh(
+            &state.token_manager,
+            &state.refresh_locks,
+            &account.id,
+        )
+        .await
+        {
+            log::info!("[checkin] 账号 {} 签到前已自动刷新: {}", account.label, msg);
+        }
+        // 刷新会改写库里的 token，必须取刷新后的最新值
+        let token = state
+            .token_manager
+            .get(&account.id)
+            .await
+            .map(|a| a.token)
+            .unwrap_or_else(|| account.token.clone());
+        let outcome = checkin::checkin(&token).await;
         if let Err(e) = &outcome {
             log::warn!("[checkin] 账号 {} 签到失败: {}", account.label, e);
         }

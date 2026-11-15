@@ -50,6 +50,21 @@
               <span>剩余 <span :class="quotaColor(item)">{{ fmt(item.quota_remaining) }} {{ item.quota_unit }}</span></span>
               <span v-if="item.expire_date">到期 {{ item.expire_date }}</span>
             </div>
+
+            <!-- 个人资源包 -->
+            <div v-if="item.add_on_quota" class="mt-3 pt-3 border-t border-dark-700">
+              <div class="flex items-center justify-between mb-1">
+                <span class="text-xs text-gray-300">个人资源包</span>
+                <span class="text-xs" :class="addOnColor(item.add_on_quota)">{{ addOnPercent(item.add_on_quota) }}%</span>
+              </div>
+              <div class="flex items-end justify-between mb-1">
+                <span class="text-xs text-gray-400">已用 {{ fmt(item.add_on_quota.used) }} / {{ fmt(item.add_on_quota.total) }} {{ item.add_on_quota.unit }}</span>
+                <span class="text-xs text-gray-400">剩余 <span :class="addOnColor(item.add_on_quota)">{{ fmt(item.add_on_quota.remaining) }}</span></span>
+              </div>
+              <div class="h-2 bg-dark-900 rounded overflow-hidden">
+                <div class="h-full rounded transition-all" :class="addOnBar(item.add_on_quota)" :style="{ width: addOnPercent(item.add_on_quota) + '%' }"></div>
+              </div>
+            </div>
           </template>
 
           <div v-else class="mt-3 text-xs text-red-400 break-all">{{ item.error }}</div>
@@ -74,7 +89,7 @@
 import { computed, ref } from 'vue'
 import { useAppStore } from '../stores/app'
 import { useToast, toErrMsg } from '../composables/useToast'
-import type { QuotaResult } from '../types'
+import type { QuotaResult, AddOnQuota } from '../types'
 
 const store = useAppStore()
 const toast = useToast()
@@ -129,6 +144,27 @@ function barColor(item: QuotaResult) {
   if (item.is_exceeded) return 'bg-red-500'
   if (percent(item) >= 80) return 'bg-orange-500'
   return 'bg-green-500'
+}
+
+function addOnPercent(a: AddOnQuota): number {
+  if (a.percentage > 0) {
+    const p = a.percentage <= 1 ? a.percentage * 100 : a.percentage
+    return Math.min(Math.round(p), 100)
+  }
+  if (a.total > 0) return Math.min(Math.round((a.used / a.total) * 100), 100)
+  return 0
+}
+
+function addOnColor(a: AddOnQuota) {
+  if (a.total > 0 && a.remaining <= 0) return 'text-red-400 font-medium'
+  if (addOnPercent(a) >= 80) return 'text-orange-400 font-medium'
+  return 'text-green-400'
+}
+
+function addOnBar(a: AddOnQuota) {
+  if (a.total > 0 && a.remaining <= 0) return 'bg-red-500'
+  if (addOnPercent(a) >= 80) return 'bg-orange-500'
+  return 'bg-blue-500'
 }
 
 function fmt(value: number): string {

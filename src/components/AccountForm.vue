@@ -23,6 +23,15 @@
           打开 qoder.cn 用量页
         </button>
 
+        <button
+          @click="handleRefreshAll"
+          :disabled="store.refreshingAll || !store.hasAccounts"
+          class="px-4 py-2 bg-dark-700 text-gray-200 rounded text-sm hover:bg-dark-600 whitespace-nowrap disabled:opacity-50"
+          title="用 refreshToken 给所有账号换新凭证，避免逐个重新登录 IDE"
+        >
+          {{ store.refreshingAll ? `刷新凭证中… ${store.refreshDone}/${store.accounts.length}` : '刷新全部凭证' }}
+        </button>
+
         <span class="w-px h-6 bg-gray-700 mx-1"></span>
 
         <button
@@ -59,7 +68,8 @@
       </div>
       <span class="text-xs text-gray-400">
         在 Qoder IDE 里登录要收集的账号，再点「读取当前登录账号」，即可把该账号凭证存入本地账号库。
-        <span v-if="includeTokens" class="text-yellow-500/80">导出文件含账号凭证，请妥善保管。</span>
+        <span v-if="includeTokens" class="text-yellow-500/80">导出文件含账号凭证，请妥善保管；文件将直接保存到 桌面/下载 目录。</span>
+        <span v-else class="text-gray-500">文件将直接保存到 桌面/下载 目录。</span>
         <span class="text-gray-500">换电脑时用「从 JSON 导入」即可还原账号库。</span>
       </span>
     </div>
@@ -170,6 +180,38 @@ async function handleCheckinAll() {
   }
 }
 
+async function handleRefreshAll() {
+  if (store.refreshingAll) return
+  try {
+    const results = await store.refreshAllTokens(false)
+    if (!results.length) {
+      toast.warning('没有可刷新的账号', '请先在「账号切换」里导入账号')
+      return
+    }
+    const refreshed = results.filter(r => r.status === 'refreshed')
+    const skipped = results.filter(r => r.status === 'skipped').length
+    const failed = results.filter(r => r.status === 'failed')
+
+    if (refreshed.length > 0) {
+      toast.success(
+        `凭证刷新完成：${refreshed.length} 个已续期`,
+        `无需刷新 ${skipped} 个 · 失败 ${failed.length} 个`
+      )
+    } else if (failed.length > 0) {
+      toast.error(`凭证刷新完成：${failed.length} 个失败`, failed.map(r => `${r.label}：${r.message}`).join('\n'))
+    } else {
+      toast.info('凭证刷新完成：所有账号凭证仍有效', `无需刷新 ${skipped} 个`)
+    }
+    // 逐账号失败原因单独提示，方便定位
+    for (const r of failed) {
+      toast.error(`${r.label} 刷新失败`, r.message)
+    }
+  } catch (e: unknown) {
+    console.error('[refresh] 批量刷新凭证失败', e)
+    toast.error('刷新全部凭证失败', toErrMsg(e))
+  }
+}
+
 async function handleImportLocal() {
   if (store.importing) return
   store.importing = true
@@ -186,16 +228,26 @@ async function handleImportLocal() {
 
 async function handleExport() {
   if (exporting.value) return
-  if (includeTokens.value && !confirm('备份文件将包含账号凭证（Token），可用于恢复登录。\n请妥善保管该文件，确定导出？')) return
+  // 是否含凭证由「含凭证 Token」勾选项显式决定（勾选时界面已有黄色警示文案），
+  // 不再用原生 confirm() —— WKWebView 下原生弹窗不可靠，会静默中断导出流程
   exporting.value = true
+  let timeoutId: number | undefined
   try {
-    const r = await store.exportAccounts(includeTokens.value)
+    // 兜底保护：后端异常挂起时 20 秒后强制结束，避免按钮永久卡在「导出中…」
+    const r = await Promise.race([
+      store.exportAccounts(includeTokens.value),
+      new Promise<never>((_, reject) => {
+        timeoutId = window.setTimeout(() => reject(new Error('导出超时（20 秒），请重试或查看日志')), 20000)
+      }),
+    ])
     if (!r.saved) return
     lastExport.value = r
     toast.success(`已导出 ${r.count} 个账号（${formatSize(r.bytes)}）`, r.path || undefined)
   } catch (e: unknown) {
+    console.error('[export] 导出备份失败', e)
     toast.error('导出备份失败', toErrMsg(e))
   } finally {
+    if (timeoutId !== undefined) window.clearTimeout(timeoutId)
     exporting.value = false
   }
 }

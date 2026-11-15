@@ -51,6 +51,8 @@ pub struct QuotaUsage {
     pub expires_at: i64,
     #[serde(rename = "userQuota", default)]
     pub user_quota: UserQuota,
+    #[serde(rename = "addOnQuota", default)]
+    pub add_on_quota: Option<AddOnQuota>,
     #[serde(rename = "isPlanQuotaProrated", default)]
     pub is_plan_quota_prorated: bool,
 }
@@ -69,6 +71,30 @@ pub struct UserQuota {
     pub unit: String,
 }
 
+/// 个人资源包（购买的一次性额度包），接口字段 addOnQuota；未购买时 total 为 0 或字段缺失
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
+pub struct AddOnQuota {
+    #[serde(default)]
+    pub total: f64,
+    #[serde(default)]
+    pub used: f64,
+    #[serde(default)]
+    pub remaining: f64,
+    #[serde(default)]
+    pub percentage: f64,
+    #[serde(default)]
+    pub unit: String,
+    #[serde(rename = "detailUrl", default)]
+    pub detail_url: String,
+}
+
+impl AddOnQuota {
+    /// 资源包是否存在有效额度（total>0 视为已购买）
+    pub fn has_quota(&self) -> bool {
+        self.total > 0.0
+    }
+}
+
 // ===== 返回给前端的结构 =====
 
 #[derive(Debug, Serialize, Clone)]
@@ -84,6 +110,8 @@ pub struct QuotaResult {
     pub usage_percentage: f64,
     pub is_exceeded: bool,
     pub expire_date: String,
+    /// 个人资源包（未购买或接口未返回时为 None）
+    pub add_on_quota: Option<AddOnQuota>,
     pub api_base: String,
     pub error: Option<String>,
 }
@@ -100,6 +128,8 @@ pub struct UsageSnapshot {
     pub percentage: f64,
     pub is_exceeded: bool,
     pub expire_date: String,
+    /// 个人资源包（接口未返回或未购买时为 None）
+    pub add_on: Option<AddOnQuota>,
     pub api_base: String,
 }
 
@@ -208,11 +238,12 @@ pub async fn fetch_usage(token: &str) -> Result<UsageSnapshot, String> {
                     (usage.user_quota.total - usage.user_quota.used).max(0.0)
                 };
                 log::info!(
-                    "[quota] {} 查询成功: {}/{} {}",
+                    "[quota] {} 查询成功: 订阅 {}/{} {}，资源包 {:?}",
                     base,
                     usage.user_quota.used,
                     usage.user_quota.total,
-                    usage.user_quota.unit
+                    usage.user_quota.unit,
+                    usage.add_on_quota.as_ref().map(|a| (a.used, a.total)),
                 );
                 return Ok(UsageSnapshot {
                     plan_name: if plan.plan_tier_name.is_empty() {
@@ -228,6 +259,9 @@ pub async fn fetch_usage(token: &str) -> Result<UsageSnapshot, String> {
                     percentage,
                     is_exceeded: usage.is_quota_exceeded,
                     expire_date,
+                    add_on: usage
+                        .add_on_quota
+                        .filter(|a| a.has_quota()),
                     api_base: base.to_string(),
                 });
             }
@@ -239,5 +273,58 @@ pub async fn fetch_usage(token: &str) -> Result<UsageSnapshot, String> {
     }
 
     Err(last_err)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// addOnQuota 与 userQuota 同时存在时都能解析（真实接口返回形态）
+    #[test]
+    fn parses_add_on_quota() {
+        let body = r#"{
+            "userId": "u1", "userType": "personal_professional", "usageType": "credits",
+            "totalUsagePercentage": 0.35, "isQuotaExceeded": false,
+            "expiresAt": 1797004800000,
+            "userQuota": {"total": 2000.0, "used": 447.0, "remaining": 1553.0, "percentage": 0.22, "unit": "credits"},
+            "addOnQuota": {"total": 1000.0, "used": 600.0, "remaining": 400.0, "percentage": 0.6, "unit": "credits",
+                           "detailUrl": "https://qoder.com.cn/account/usage"},
+            "isPlanQuotaProrated": false
+        }"#;
+        let usage: QuotaUsage = serde_json::from_str(body).unwrap();
+        let addon = usage.add_on_quota.expect("addOnQuota missing");
+        assert!(addon.has_quota());
+        assert_eq!(addon.total, 1000.0);
+        assert_eq!(addon.used, 600.0);
+        assert_eq!(addon.remaining, 400.0);
+        assert_eq!(addon.unit, "credits");
+        assert_eq!(usage.user_quota.total, 2000.0);
+    }
+
+    /// 未购买资源包：字段缺失不报错
+    #[test]
+    fn handles_missing_add_on_quota() {
+        let body = r#"{
+            "userId": "u2", "userType": "personal_free", "usageType": "credits",
+            "userQuota": {"total": 100.0, "used": 50.0, "remaining": 50.0, "unit": "credits"},
+            "isPlanQuotaProrated": false
+        }"#;
+        let usage: QuotaUsage = serde_json::from_str(body).unwrap();
+        assert!(usage.add_on_quota.is_none());
+    }
+
+    /// 资源包 total=0 视为未购买（filter 掉）
+    #[test]
+    fn zero_total_add_on_treated_as_absent() {
+        let body = r#"{
+            "userQuota": {"total": 100.0, "used": 10.0, "unit": "credits"},
+            "addOnQuota": {"total": 0.0, "used": 0.0, "remaining": 0.0, "unit": "credits"}
+        }"#;
+        let usage: QuotaUsage = serde_json::from_str(body).unwrap();
+        assert!(!usage.add_on_quota.as_ref().unwrap().has_quota());
+        // fetch_usage 中 filter 后应丢弃 → 模拟同样的过滤逻辑
+        let filtered = usage.add_on_quota.filter(|a| a.has_quota());
+        assert!(filtered.is_none());
+    }
 }
 

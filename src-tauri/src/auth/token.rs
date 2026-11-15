@@ -452,10 +452,19 @@ pub struct AccountView {
     /// 是否有完整登录数据（含 refreshToken）。没有时切换会被拒绝，
     /// 因为最小数据会被 IDE AuthStore 校验清除、导致掉登录。
     pub has_full_credentials: bool,
+    /// 访问凭证的精确到期时间（ISO8601，取自 auth_blob；拿不到时为空）
+    pub expires_at: String,
+    /// 访问凭证是否即将过期（剩余不足 3 天），UI 可据此提示「建议刷新」
+    pub expiring_soon: bool,
 }
 
 impl From<AccountToken> for AccountView {
     fn from(a: AccountToken) -> Self {
+        // 精确到期时间藏在 auth_blob 里；解析失败就退回库里的日期（只到天）
+        let expires_at = crate::local_account::read_tokens_from_json(&a.auth_blob)
+            .map(|t| t.expires_at)
+            .unwrap_or_default();
+        let expiring_soon = crate::auth::session::needs_refresh(&expires_at);
         Self {
             id: a.id,
             label: a.label,
@@ -470,6 +479,8 @@ impl From<AccountToken> for AccountView {
             ide_kind: a.ide_kind,
             can_activate: !a.auth_blob.is_empty() || !a.token.is_empty(),
             has_full_credentials: !a.auth_blob.is_empty(),
+            expires_at,
+            expiring_soon,
         }
     }
 }

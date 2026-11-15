@@ -1,10 +1,10 @@
-mod auth;
+pub mod auth;
 mod checkin;
 mod commands;
 mod error;
-mod local_account;
+pub mod local_account;
 mod process;
-mod quota;
+pub mod quota;
 mod state;
 mod tray;
 
@@ -59,6 +59,8 @@ pub fn run() {
             commands::ide_cmd::restore_auth_backup,
             commands::quota_cmd::check_quota,
             commands::quota_cmd::check_all_quotas,
+            commands::refresh_cmd::refresh_token,
+            commands::refresh_cmd::refresh_all_tokens,
             commands::checkin_cmd::checkin_account,
             commands::checkin_cmd::checkin_all,
             commands::app_cmd::get_app_status,

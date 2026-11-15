@@ -98,56 +98,42 @@ fn default_export_dir() -> Option<std::path::PathBuf> {
     Some(home)
 }
 
-/// 弹出「另存为」对话框，把所有账号信息导出为 JSON 备份文件。
+/// 导出所有账号信息为 JSON 备份文件（直接落到 桌面/下载 目录）。
+/// 之前用 NSSavePanel「另存为」时，部分 macOS 环境下面板不显示且回调不触发，
+/// rx.await 永久挂起导致「导出中…」卡死；改为固定目录 + 时间戳文件名彻底绕开原生对话框，
+/// 失败原因通过 [export] 日志与 toast 上报。
 #[tauri::command]
 pub async fn export_accounts(
-    app: AppHandle,
     state: State<'_, AppState>,
     include_tokens: bool,
 ) -> AppResult<ExportResult> {
     let accounts = state.token_manager.list().await;
+    log::info!(
+        "[export] 收到导出请求: {} 个账号，含凭证: {}",
+        accounts.len(),
+        include_tokens
+    );
+
     if accounts.is_empty() {
+        log::warn!("[export] 账号库为空，取消导出");
         return Err(AppError::Config("账号库为空，暂无可导出的内容".to_string()));
     }
 
     let now = chrono::Local::now();
-    let default_name = format!("qoder-switch-accounts-{}.json", now.format("%Y%m%d-%H%M%S"));
+    let file_name = format!("qoder-switch-accounts-{}.json", now.format("%Y%m%d-%H%M%S"));
+    let dir = default_export_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
+    let path = dir.join(&file_name);
 
-    let mut dialog = app
-        .dialog()
-        .file()
-        .set_title("导出账号备份（JSON）")
-        .set_file_name(&default_name)
-        .add_filter("JSON 文件", &["json"]);
+    log::info!("[export] 保存路径: {}", path.display());
 
-    // 默认落在桌面 / 下载目录，省得用户每次自己找
-    if let Some(dir) = default_export_dir() {
-        dialog = dialog.set_directory(dir);
+    match write_payload_to(&path, accounts, include_tokens) {
+        Ok(result) => Ok(result),
+        Err(e) => {
+            // 失败原因必须留日志，同时透传给前端 toast
+            log::error!("[export] 导出失败: {}", e);
+            Err(e)
+        }
     }
-
-    // 注意：blocking_save_file 不能在 async 命令里调用（会死锁卡住），
-    // 必须用回调式 API + oneshot channel 等待结果。
-    let (tx, rx) = tokio::sync::oneshot::channel::<Option<tauri_plugin_dialog::FilePath>>();
-    dialog.save_file(move |picked| {
-        let _ = tx.send(picked);
-    });
-
-    // 用户取消（回调收到 None）
-    let Ok(Some(target)) = rx.await else {
-        return Ok(ExportResult {
-            saved: false,
-            path: None,
-            count: accounts.len(),
-            bytes: 0,
-            includes_tokens: include_tokens,
-        });
-    };
-
-    let path = target
-        .into_path()
-        .map_err(|e| AppError::Config(format!("无效的保存路径: {}", e)))?;
-
-    write_payload_to(&path, state.token_manager.list().await, include_tokens)
 }
 
 /// 把账号列表序列化成 JSON 并写入指定路径（对话框之外的实际落盘逻辑）
@@ -172,10 +158,11 @@ fn write_payload_to(
         .map_err(|e| AppError::Config(format!("写入文件失败: {}", e)))?;
 
     log::info!(
-        "[export] 已导出 {} 个账号到 {}（含凭证: {}）",
+        "[export] 已导出 {} 个账号到 {}（含凭证: {}，{} 字节）",
         payload.account_count,
         path.display(),
-        include_tokens
+        include_tokens,
+        text.len()
     );
 
     Ok(ExportResult {

@@ -43,7 +43,16 @@
               <span v-else class="text-gray-600">-</span>
             </td>
             <td class="py-2.5 px-3 text-gray-400">{{ account.user_type || '-' }}</td>
-            <td class="py-2.5 px-3 text-gray-400">{{ account.expire_date || '-' }}</td>
+            <td class="py-2.5 px-3 text-gray-400">
+              <span :class="account.expiring_soon ? 'text-yellow-400' : ''">
+                {{ account.expire_date || '-' }}
+              </span>
+              <span
+                v-if="account.expiring_soon"
+                class="ml-1 text-[10px] px-1 py-0.5 rounded bg-yellow-500/15 text-yellow-400 align-middle"
+                title="凭证即将过期，点「刷凭证」可自动续期"
+              >将过期</span>
+            </td>
             <td class="py-2.5 px-3" :class="getBalanceClass(account)">{{ getBalanceText(account) }}</td>
             <td class="py-2.5 px-3">
               <span class="text-xs px-2 py-0.5 rounded" :class="getStatusClass(account)">{{ getStatusText(account) }}</span>
@@ -61,6 +70,12 @@
                   :disabled="store.checkingIn"
                   class="text-green-400 text-xs hover:text-green-300 disabled:text-gray-500 disabled:cursor-wait"
                 >{{ store.checkingIn ? '签到中…' : '签到' }}</button>
+                <button
+                  @click="handleRefresh(account)"
+                  :disabled="store.refreshingIds.includes(account.id) || !account.has_full_credentials"
+                  class="text-purple-400 text-xs hover:text-purple-300 disabled:text-gray-500 disabled:cursor-not-allowed"
+                  :title="account.has_full_credentials ? '用 refreshToken 换取新凭证' : '缺少完整登录数据，无法刷新'"
+                >{{ store.refreshingIds.includes(account.id) ? '刷新中…' : '刷凭证' }}</button>
                 <button @click="handleCopy(account)" class="text-gray-400 text-xs hover:text-gray-200">复制邮箱</button>
                 <button @click="handleRemove(account)" class="text-red-400 text-xs hover:text-red-300">删除</button>
               </div>
@@ -134,6 +149,22 @@ async function handleCheckin(account: AccountToken) {
     }
   } catch (e: unknown) {
     toast.error(`${account.label} 签到失败`, toErrMsg(e))
+  }
+}
+
+async function handleRefresh(account: AccountToken) {
+  try {
+    const r = await store.refreshToken(account.id, true)
+    if (r.status === 'refreshed') {
+      toast.success(`${r.label} 凭证已刷新`, r.message)
+    } else if (r.status === 'skipped') {
+      toast.info(`${r.label} 无需刷新`, r.message)
+    } else {
+      toast.error(`${r.label} 刷新失败`, r.message)
+    }
+  } catch (e: unknown) {
+    console.error('[refresh] 刷新单个账号失败', e)
+    toast.error(`${account.label} 刷新失败`, toErrMsg(e))
   }
 }
 

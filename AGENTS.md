@@ -29,7 +29,7 @@ pnpm tauri build    # 打包 dmg / app
 ### Rust 端（使用 `log` crate，禁止 `println!`/`eprintln!`）
 
 - 新增/修改 `#[tauri::command]` 时，入口处 `log::info!` 记录关键参数（不含敏感值），失败处 `log::error!`/`log::warn!` 记录错误与上下文
-- 所有外部接口调用（`quota.rs`、`checkin.rs` 等）必须打印：请求目标（域名/接口）、结果、失败原因。失败必须留日志，不允许静默返回
+- 所有外部接口调用（`quota.rs`、`checkin.rs`、`auth/refresh.rs` 等）必须打印：请求目标（域名/接口）、结果、失败原因。失败必须留日志，不允许静默返回
 - 日志统一带 `[模块]` 前缀，如 `[ide]`、`[checkin]`、`[quota]`、`[account]`、`[backup]`，沿用现有风格
 - 级别约定：`info` = 关键节点（已写入/已备份/领取成功）；`warn` = 可恢复异常（超时降级、无可用活动）；`error` = 操作失败
 - **严禁打印 token、auth_blob、refreshToken 等凭证内容**，只记录账号标识（label/user_id 掩码）与文件路径
@@ -60,6 +60,7 @@ pnpm tauri build    # 打包 dmg / app
 
 - **敏感数据**：不把 token/auth_blob 写入日志、console、测试文件；导出含凭证的备份文件路径可以打印，内容不行
 - **接口容错**：外部接口遵循现有「CN 域名优先、国际域名回退」模式（`openapi.qoder.com.cn` → `openapi.qoder.sh`），新接口沿用
+- **凭证刷新**：`POST /api/v1/deviceToken/refresh`，body `{"refresh_token":"drt-..."}`，响应为 **snake_case**（`device_token`/`refresh_token`/`expires_at`/`refresh_token_expires_at`）。域名顺序必须跟着账号版本走（`intl` 优先国际域名，否则会被 CN 域名的 401 误判成「凭证失效」）。刷新会轮换 `refreshToken`，必须按「先本地库、再 IDE 文件」顺序落盘，同一账号刷新要用 `RefreshLocks` 串行
 - **文案语言**：UI 文案用简体中文
 - **样式**：TailwindCSS，跟随现有深色 UI 风格，不引入新的 UI 框架
 - **类型**：新增 IPC 命令的返回类型定义在 `src/types.ts`，前后端字段保持 snake_case/camelCase 一致（前端 camelCase，Rust serde rename）

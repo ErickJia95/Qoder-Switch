@@ -44,6 +44,87 @@ pub fn restore_backup(kind: &str) -> Result<(), String> {
     macos_impl::restore_backup(kind)
 }
 
+/// 从 auth.v1.dat 明文里取出刷新所需字段。
+/// 返回 (token, refreshToken, expiresAt, refreshTokenExpiresAt)，缺失的字段为空串。
+pub fn read_tokens_from_json(auth_json: &str) -> Result<AuthTokens, String> {
+    let v: serde_json::Value =
+        serde_json::from_str(auth_json).map_err(|e| format!("解析登录数据失败: {}", e))?;
+    let pick = |field: &str| -> String {
+        v.get(field)
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string()
+    };
+    let tokens = AuthTokens {
+        token: pick("token"),
+        refresh_token: pick("refreshToken"),
+        expires_at: pick("expiresAt"),
+        refresh_token_expires_at: pick("refreshTokenExpiresAt"),
+    };
+    if tokens.refresh_token.is_empty() {
+        return Err("该账号没有 refreshToken，无法刷新".to_string());
+    }
+    Ok(tokens)
+}
+
+/// auth.v1.dat 明文里的凭证字段
+#[derive(Debug, Clone)]
+pub struct AuthTokens {
+    /// 访问凭证；刷新流程只用 refresh_token，但保留它便于诊断与将来扩展
+    #[allow(dead_code)]
+    pub token: String,
+    pub refresh_token: String,
+    pub expires_at: String,
+    pub refresh_token_expires_at: String,
+}
+
+/// 把刷新后的凭证写进 auth.v1.dat 明文：只覆盖 token/refreshToken/两个过期字段，
+/// 其余字段（authenticationContext / user / schemaVersion 等）原样保留。
+pub fn patch_auth_json(
+    auth_json: &str,
+    token: &str,
+    refresh_token: &str,
+    expires_at: &str,
+    refresh_token_expires_at: &str,
+) -> Result<String, String> {
+    let mut v: serde_json::Value =
+        serde_json::from_str(auth_json).map_err(|e| format!("解析登录数据失败: {}", e))?;
+    let obj = v
+        .as_object_mut()
+        .ok_or_else(|| "登录数据不是 JSON 对象".to_string())?;
+
+    if !token.is_empty() {
+        obj.insert("token".to_string(), serde_json::Value::String(token.to_string()));
+    }
+    if !refresh_token.is_empty() {
+        obj.insert(
+            "refreshToken".to_string(),
+            serde_json::Value::String(refresh_token.to_string()),
+        );
+    }
+    if !expires_at.is_empty() {
+        obj.insert(
+            "expiresAt".to_string(),
+            serde_json::Value::String(expires_at.to_string()),
+        );
+    }
+    if !refresh_token_expires_at.is_empty() {
+        obj.insert(
+            "refreshTokenExpiresAt".to_string(),
+            serde_json::Value::String(refresh_token_expires_at.to_string()),
+        );
+    }
+
+    serde_json::to_string(&v).map_err(|e| format!("序列化登录数据失败: {}", e))
+}
+
+/// 某个 IDE 版本当前登录的 user_id（未登录 / 读不到时返回 None）
+pub fn current_user_id(kind: &str) -> Option<String> {
+    macos_impl::read_account_for(kind)
+        .map(|a| a.user_id)
+        .filter(|id| !id.is_empty())
+}
+
 /// 由 token + 用户信息拼一个最小可用的 auth 数据（缺少 refreshToken）。
 /// ⚠️ 仅保留给测试/诊断用：实测 Qoder IDE 0.5.11 的 AuthStore 启动校验会拒绝这种
 /// 缺 refreshToken 的数据（Credential storage diagnostic result:invalid stage:validate）
@@ -555,6 +636,51 @@ mod macos_impl {
             assert_eq!(v["user"]["id"], "u1");
             assert_eq!(v["expiresAt"], "2026-12-11T23:59:59Z");
             assert!(v.get("refreshToken").is_none());
+        }
+
+        /// 刷新后回写凭证：只改 4 个凭证字段，其余（context/user/schemaVersion）必须原样保留
+        #[test]
+        fn patch_only_touches_credential_fields() {
+            use super::super::{patch_auth_json, read_tokens_from_json};
+            let original = r#"{"schemaVersion":1,"authenticationContext":"[\"https://qoder.cn\",\"https://openapi.qoder.com.cn\",\"prod\"]","token":"dt-old","refreshToken":"drt-old","expiresAt":"2026-12-03T06:49:28Z","refreshTokenExpiresAt":"2027-10-29T06:49:28Z","user":{"id":"u1","name":"甲","email":"a@x.com"},"profileOverlay":{"x":1}}"#;
+            let patched = patch_auth_json(
+                original,
+                "dt-new",
+                "drt-new",
+                "2026-12-15T05:04:32Z",
+                "2027-11-10T05:04:32Z",
+            )
+            .unwrap();
+            let v: Value = serde_json::from_str(&patched).unwrap();
+
+            assert_eq!(v["token"], "dt-new");
+            assert_eq!(v["refreshToken"], "drt-new");
+            assert_eq!(v["expiresAt"], "2026-12-15T05:04:32Z");
+            assert_eq!(v["refreshTokenExpiresAt"], "2027-11-10T05:04:32Z");
+            // 非凭证字段一律不动
+            assert_eq!(v["schemaVersion"], 1);
+            assert_eq!(v["user"]["id"], "u1");
+            assert_eq!(v["user"]["name"], "甲");
+            assert_eq!(v["profileOverlay"]["x"], 1);
+            assert!(v["authenticationContext"].as_str().unwrap().contains("openapi.qoder.com.cn"));
+
+            // 空值不覆盖：传空串时保留旧值
+            let keepped = patch_auth_json(original, "", "", "", "").unwrap();
+            let k: Value = serde_json::from_str(&keepped).unwrap();
+            assert_eq!(k["token"], "dt-old");
+            assert_eq!(k["refreshToken"], "drt-old");
+
+            // 从 auth_blob 抽出刷新所需字段；缺 refreshToken 要报错（这种账号无法刷新）
+            let json = r#"{"token":"dt-x","refreshToken":"drt-y","expiresAt":"2026-12-14T13:45:14Z","refreshTokenExpiresAt":"2027-11-09T13:45:14Z"}"#;
+            let t = read_tokens_from_json(json).unwrap();
+            assert_eq!(t.token, "dt-x");
+            assert_eq!(t.refresh_token, "drt-y");
+            assert_eq!(t.expires_at, "2026-12-14T13:45:14Z");
+            assert_eq!(t.refresh_token_expires_at, "2027-11-09T13:45:14Z");
+
+            let err = read_tokens_from_json(r#"{"token":"dt-x"}"#).unwrap_err();
+            assert!(err.contains("无法刷新"));
+            assert!(read_tokens_from_json("not json").is_err());
         }
     }
 }
