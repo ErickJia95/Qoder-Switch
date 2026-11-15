@@ -23,6 +23,12 @@ pub struct AccountToken {
     pub quota_used: Option<u64>,
     #[serde(default)]
     pub quota_total: Option<u64>,
+    /// 该账号最近一次从 IDE 读取到的 auth.v1.dat 明文（含 refreshToken），切换账号时原样写回
+    #[serde(default)]
+    pub auth_blob: String,
+    /// 该账号属于哪个版本："cn" / "intl"
+    #[serde(default)]
+    pub ide_kind: String,
     #[serde(default)]
     pub machine_token: String,
     #[serde(default)]
@@ -48,6 +54,7 @@ impl TokenManager {
         }
     }
 
+    #[allow(dead_code)]
     pub async fn add(&self, token: String, label: String, user_id: String, email: String, name: String, user_type: String, expire_date: String) {
         let id = format!("tok_{:x}", chrono::Utc::now().timestamp_millis());
         let entry = AccountToken {
@@ -62,6 +69,8 @@ impl TokenManager {
             expire_date,
             quota_used: None,
             quota_total: None,
+            auth_blob: String::new(),
+            ide_kind: String::new(),
             machine_token: String::new(),
             machine_id: String::new(),
             machine_code: String::new(),
@@ -85,6 +94,8 @@ impl TokenManager {
         email: String,
         name: String,
         expire_date: String,
+        auth_blob: String,
+        ide_kind: String,
     ) -> bool {
         {
             let mut accounts = self.accounts.write().await;
@@ -97,6 +108,12 @@ impl TokenManager {
                     if !expire_date.is_empty() {
                         a.expire_date = expire_date;
                     }
+                    if !auth_blob.is_empty() {
+                        a.auth_blob = auth_blob.clone();
+                    }
+                    if !ide_kind.is_empty() {
+                        a.ide_kind = ide_kind.clone();
+                    }
                     // 凭证已变，旧的额度缓存作废
                     a.quota_used = None;
                     a.quota_total = None;
@@ -107,7 +124,28 @@ impl TokenManager {
                 }
             }
         }
-        self.add(token, label, user_id, email, name, String::new(), expire_date).await;
+        // 不存在则新增：登录数据一并写入，只保存一次
+        let entry = AccountToken {
+            id: format!("tok_{:x}", chrono::Utc::now().timestamp_millis()),
+            label,
+            token,
+            user_id,
+            email,
+            name,
+            status: "available".to_string(),
+            user_type: String::new(),
+            expire_date,
+            quota_used: None,
+            quota_total: None,
+            auth_blob,
+            ide_kind,
+            machine_token: String::new(),
+            machine_id: String::new(),
+            machine_code: String::new(),
+            machine_type: String::new(),
+        };
+        self.accounts.write().await.push(entry);
+        let _ = self.save().await;
         false
     }
 
@@ -116,6 +154,34 @@ impl TokenManager {
         if let Some(account) = accounts.iter_mut().find(|a| a.id == id) {
             account.user_type = user_type;
             account.expire_date = expire_date;
+        }
+        drop(accounts);
+        let _ = self.save().await;
+    }
+
+    /// 切换成功后回写最新登录数据（IDE 可能已刷新 token）
+    pub async fn refresh_credentials(
+        &self,
+        id: &str,
+        token: String,
+        expire_date: String,
+        auth_blob: String,
+        ide_kind: String,
+    ) {
+        let mut accounts = self.accounts.write().await;
+        if let Some(a) = accounts.iter_mut().find(|a| a.id == id) {
+            if !token.is_empty() {
+                a.token = token;
+            }
+            if !expire_date.is_empty() {
+                a.expire_date = expire_date;
+            }
+            if !auth_blob.is_empty() {
+                a.auth_blob = auth_blob;
+            }
+            if !ide_kind.is_empty() {
+                a.ide_kind = ide_kind;
+            }
         }
         drop(accounts);
         let _ = self.save().await;
@@ -193,6 +259,12 @@ impl TokenManager {
                         if inc.quota_total.is_some() {
                             a.quota_total = inc.quota_total;
                         }
+                        if !inc.auth_blob.is_empty() {
+                            a.auth_blob = inc.auth_blob.clone();
+                        }
+                        if !inc.ide_kind.is_empty() {
+                            a.ide_kind = inc.ide_kind.clone();
+                        }
                         updated += 1;
                     }
                     None => {
@@ -252,6 +324,17 @@ impl TokenManager {
         } else {
             false
         }
+    }
+
+    /// 按 id 取单个账号（含 auth_blob）
+    pub async fn get(&self, id: &str) -> Option<AccountToken> {
+        let accounts = self.accounts.read().await;
+        accounts.iter().find(|a| a.id == id).cloned()
+    }
+
+    /// 给前端用的视图：不暴露 token 与 auth_blob，只给 can_activate 标记
+    pub async fn list_views(&self) -> Vec<AccountView> {
+        self.list().await.into_iter().map(AccountView::from).collect()
     }
 
     pub async fn list(&self) -> Vec<AccountToken> {
@@ -347,5 +430,46 @@ impl TokenManager {
         let plaintext = cipher.decrypt(nonce, &data[12..])
             .map_err(|e| format!("解密失败: {}", e))?;
         Ok(plaintext)
+    }
+}
+
+/// 前端可见的账号信息（脱敏：不含 token / auth_blob）
+#[derive(Clone, Debug, Serialize)]
+pub struct AccountView {
+    pub id: String,
+    pub label: String,
+    pub user_id: String,
+    pub email: String,
+    pub name: String,
+    pub status: String,
+    pub user_type: String,
+    pub expire_date: String,
+    pub quota_used: Option<u64>,
+    pub quota_total: Option<u64>,
+    pub ide_kind: String,
+    /// 是否具备一键切换所需的登录数据
+    pub can_activate: bool,
+    /// 是否有完整登录数据（含 refreshToken）。没有时切换会被拒绝，
+    /// 因为最小数据会被 IDE AuthStore 校验清除、导致掉登录。
+    pub has_full_credentials: bool,
+}
+
+impl From<AccountToken> for AccountView {
+    fn from(a: AccountToken) -> Self {
+        Self {
+            id: a.id,
+            label: a.label,
+            user_id: a.user_id,
+            email: a.email,
+            name: a.name,
+            status: a.status,
+            user_type: a.user_type,
+            expire_date: a.expire_date,
+            quota_used: a.quota_used,
+            quota_total: a.quota_total,
+            ide_kind: a.ide_kind,
+            can_activate: !a.auth_blob.is_empty() || !a.token.is_empty(),
+            has_full_credentials: !a.auth_blob.is_empty(),
+        }
     }
 }

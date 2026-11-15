@@ -68,3 +68,33 @@ pub async fn restart_ide(kind: String) -> AppResult<RestartResult> {
         message: report.message,
     })
 }
+
+#[derive(Serialize)]
+pub struct RestoreResult {
+    pub kind: String,
+    pub message: String,
+}
+
+/// 把切换前的登录态备份写回 IDE 并重启（切换失败时的退路）
+#[tauri::command]
+pub async fn restore_auth_backup(kind: String) -> AppResult<RestoreResult> {
+    let ide = IdeKind::parse(&kind)
+        .ok_or_else(|| AppError::Config(format!("未知的 Qoder 版本: {}", kind)))?;
+
+    let result = tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+        if !process::quit(ide) {
+            return Err(format!("{} 未能退出，已取消恢复", ide.app_name()));
+        }
+        crate::local_account::restore_backup(ide.key())?;
+        process::launch(ide)
+    })
+    .await
+    .map_err(|e| AppError::Config(format!("恢复任务执行失败: {}", e)))?;
+
+    result.map_err(AppError::Auth)?;
+
+    Ok(RestoreResult {
+        kind,
+        message: "已恢复切换前的登录态并重启 IDE".to_string(),
+    })
+}

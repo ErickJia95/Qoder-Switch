@@ -9,9 +9,10 @@ Qoder Switch 只做两件事：**收集多个 Qoder 账号**，以及**查看每
 ## 功能
 
 - **账号导入**：读取本机 Qoder IDE 当前登录账号的凭证（macOS 钥匙串 + `auth.v1.dat` 解密），按 `user_id` 去重，重复导入只刷新凭证
-- **账号切换**：把某个账号标记为「当前账号」，可顺手重启 Qoder CN / Qoder，重启后用该账号登录即可（本工具不修改 IDE 登录态）
+- **账号切换**：点「接入」直接切换 IDE 的登录身份 —— 退出对应 IDE → 把该账号的登录态写入 `auth.v1.dat` → 重新打开，打开即是该账号（原登录态自动备份，可一键回退）
 - **一键重启 IDE**：分别识别 Qoder CN（`com.qodercn.app`）与 Qoder（`com.qoder.app`），先优雅退出、超时再 TERM/KILL 兜底，然后重新打开；状态栏随时显示两者运行状态
 - **用量查询**：逐个或批量查询账号用量（已用 / 总量 / 剩余 / 到期 / 套餐），数据来自 `openapi.qoder.com.cn` 的账号用量接口，也就是 [qoder.cn/account/usage](https://qoder.cn/account/usage) 页面背后的接口；CN 接口不可用时自动回退到 `openapi.qoder.sh`
+- **一键领取签到**：给账号库里所有账号逐个执行每日签到（每天 100 Credits，领取后 30 天有效）。也可在账号列表里对单个账号点「签到」。链路为 `GET /sash/api/v1/me/campaigns` → `POST /sash/api/v1/me/campaigns/{id}/claim`，接口幂等，重复点击不会重复领取；国内版与国际版域名自动回退
 - **一键打开**：用系统浏览器打开 qoder.cn 用量页面
 - **导出备份**：把所有账号信息导出成一份 JSON 文件（可选是否包含凭证 Token），默认保存到桌面，用于换机迁移或本地留档
 - **导入恢复**：选择备份 JSON 合并回账号库 —— 按 `user_id` 去重、只覆盖非空字段、不删除现有账号；可选恢复「当前账号」标记
@@ -29,7 +30,8 @@ Qoder Switch 只做两件事：**收集多个 Qoder 账号**，以及**查看每
 3. 换账号 → 在 IDE 里退出并登录另一个账号 → 再点一次「读取当前登录账号」
 4. 需要知道某个账号还剩多少用量时，点该行「查用量」，或点顶部「查询全部用量」
 4.1 换电脑/重装后，点顶部「从 JSON 导入」选中之前的备份文件，账号库即可原样还原
-5. 想用哪个账号工作：点该行「接入」，在弹窗里选「重启 Qoder CN」/「重启 Qoder」（未运行时显示「启动」），IDE 重开后用该账号登录即可；只想改标记就选「仅标记为当前账号」
+4.2 每天点顶部「一键领取签到」即可给所有账号签到领 Credits；也可以只给某个账号点该行「签到」
+5. 想用哪个账号工作：点该行「接入」→「切换到该账号并重启 Qoder CN」；IDE 重开后就是该账号（工具会在启动后回读 `auth.v1.dat` 确认）。只想改标记就选「仅标记为当前账号」
 
 > 凭证有效期约 30 天，过期后只要在 IDE 重新登录一次，再点「读取当前登录账号」即可刷新（同 `user_id` 原地更新，不会产生重复账号）。
 > 本地登录态读取依赖 macOS 登录钥匙串与 Qoder IDE 的 `auth.v1.dat`，需要本机已安装并登录过 Qoder IDE。
@@ -61,9 +63,10 @@ Qoder-Switch/
 │   └── App.vue
 ├── src-tauri/src/
 │   ├── auth/token.rs           # 账号存储（AES-256-GCM）
-│   ├── commands/               # IPC 命令：account / quota / app / backup（导出导入）
+│   ├── commands/               # IPC 命令：account / quota / checkin / app / backup（导出导入）
 │   ├── local_account.rs        # 本机 IDE 登录态读取（OSCrypt v10）
 │   ├── quota.rs                # 用量接口（CN 优先，国际回退）
+│   ├── checkin.rs              # 每日签到（campaigns 查询 + claim 领取，CN 优先国际回退）
 │   ├── process.rs              # 判断 IDE 是否运行
 │   ├── state.rs / tray.rs / lib.rs
 │   └── Cargo.toml
@@ -80,7 +83,7 @@ Qoder-Switch/
   "schema": "qoder-switch/accounts",
   "schema_version": 1,
   "app": "Qoder Switch",
-  "app_version": "2.2.0",
+  "app_version": "2.4.0",
   "exported_at": "2026-11-14T22:30:00+08:00",
   "account_count": 2,
   "includes_tokens": true,
@@ -96,14 +99,33 @@ Qoder-Switch/
       "quota_used": 447,
       "quota_total": 2000,
       "is_current": true,
-      "token": "..."
+      "token": "...",
+      "auth_blob": "{\"schemaVersion\":1,\"token\":\"...\",\"refreshToken\":\"...\",...}",
+      "ide_kind": "cn"
     }
   ]
 }
 ```
 
-- 勾选「含凭证 Token」时 `token` 字段为明文凭证，文件可直接用于迁移/恢复，**请妥善保管**
+- 勾选「含凭证 Token」时 `token` 与 `auth_blob`（完整登录数据，含 `refreshToken`）都是明文，文件可直接用于迁移/恢复，**请妥善保管**
 - 取消勾选则不写 `token`，只有账号元信息，适合发给别人排查问题
+
+### 切换账号的原理
+
+Qoder IDE 把登录态存在 `~/Library/Application Support/<app-id>/auth.v1.dat`，内容是用 Chromium safeStorage（OSCrypt v10，密钥在 macOS 钥匙串）加密的 JSON，含 `token` / `refreshToken` / `expiresAt` / `user`。
+
+切换流程：
+
+1. 退出对应 IDE（AppleEvent → TERM → KILL 逐级兜底），避免它在退出时覆盖文件
+2. 用钥匙串里的密钥重新加密并原子写入目标账号的登录态
+3. 重新打开 IDE，并回读 `auth.v1.dat` 校验 `user.id` 是否为目标账号
+
+安全措施：
+
+- 写入前把原文件备份到 `~/Library/Application Support/Qoder/auth-backup-<cn|intl>.dat`
+- 写完后立即回读校验，失败会明确报错
+- 弹窗里提供「恢复切换前的登录态」一键回退
+- **前提**：每个账号都要先用「读取当前登录账号」收集一次（这样才有完整 `refreshToken`）。只有旧版 token 的账号会用最小登录数据尝试，若 IDE 要求重新登录，登录一次再读一次即可补全
 
 ### 导入 / 恢复规则
 

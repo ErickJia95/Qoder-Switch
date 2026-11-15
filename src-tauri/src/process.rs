@@ -127,40 +127,47 @@ pub struct RestartReport {
     pub message: String,
 }
 
+/// 退出指定版本的 Qoder：AppleEvent → TERM → KILL 逐级升级，返回是否已退出
+pub fn quit(kind: IdeKind) -> bool {
+    if !is_running(kind) {
+        return true;
+    }
+
+    // 1) 优雅退出：让 IDE 自己收尾（保存窗口状态等）。
+    //    走 AppleEvent，若系统弹出自动化授权框用户没理，osascript 会一直等，因此加超时兜底。
+    let mut quit_cmd = Command::new("osascript");
+    quit_cmd
+        .args([
+            "-e",
+            &format!("tell application id \"{}\" to quit", kind.bundle_id()),
+        ])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    if !run_with_timeout(quit_cmd, Duration::from_secs(4)) {
+        log::warn!("[ide] {} 的 AppleEvent 退出未生效，改用信号", kind.app_name());
+    }
+    if wait_until_stopped(kind, Duration::from_secs(8)) {
+        return true;
+    }
+
+    // 2) 还被对话框拦住 → TERM
+    log::warn!("[ide] {} 未在超时内退出，发送 TERM", kind.app_name());
+    kill(kind, "-TERM");
+    if wait_until_stopped(kind, Duration::from_secs(3)) {
+        return true;
+    }
+
+    // 3) 仍然不动 → KILL
+    log::warn!("[ide] {} 仍在运行，发送 KILL", kind.app_name());
+    kill(kind, "-KILL");
+    wait_until_stopped(kind, Duration::from_secs(3))
+}
+
 /// 重启（或启动）指定版本的 Qoder：先优雅退出，必要时强制结束，再重新打开
 pub fn restart(kind: IdeKind) -> RestartReport {
     let was_running = is_running(kind);
-    let mut stopped = true;
 
-    if was_running {
-        // 1) 优雅退出：让 IDE 自己收尾（保存窗口状态等）。
-        //    走 AppleEvent，若系统弹出自动化授权框用户没理，osascript 会一直等，因此加超时兜底。
-        let mut quit_cmd = Command::new("osascript");
-        quit_cmd
-            .args([
-                "-e",
-                &format!("tell application id \"{}\" to quit", kind.bundle_id()),
-            ])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null());
-        if !run_with_timeout(quit_cmd, Duration::from_secs(4)) {
-            log::warn!("[ide] {} 的 AppleEvent 退出未生效，改用信号", kind.app_name());
-        }
-
-        stopped = wait_until_stopped(kind, Duration::from_secs(8));
-
-        // 2) 还被对话框拦住 → TERM
-        if !stopped {
-            log::warn!("[ide] {} 未在超时内退出，发送 TERM", kind.app_name());
-            stopped = kill(kind, "-TERM") && wait_until_stopped(kind, Duration::from_secs(3));
-        }
-
-        // 3) 仍然不动 → KILL
-        if !stopped {
-            log::warn!("[ide] {} 仍在运行，发送 KILL", kind.app_name());
-            stopped = kill(kind, "-KILL") && wait_until_stopped(kind, Duration::from_secs(3));
-        }
-    } else if !is_installed(kind) {
+    if !was_running && !is_installed(kind) {
         return RestartReport {
             was_running: false,
             stopped: true,
@@ -169,12 +176,16 @@ pub fn restart(kind: IdeKind) -> RestartReport {
         };
     }
 
-    if was_running && !stopped {
+    let stopped = quit(kind);
+    if !stopped {
         return RestartReport {
             was_running,
             stopped: false,
             launched: false,
-            message: format!("{} 未能退出（可能被未保存的对话框阻塞），请手动关闭后重试", kind.app_name()),
+            message: format!(
+                "{} 未能退出（可能被未保存的对话框阻塞），请手动关闭后重试",
+                kind.app_name()
+            ),
         };
     }
 
@@ -245,7 +256,8 @@ fn run_with_timeout(mut cmd: Command, timeout: Duration) -> bool {
     }
 }
 
-fn wait_until_stopped(kind: IdeKind, timeout: Duration) -> bool {    let deadline = Instant::now() + timeout;
+fn wait_until_stopped(kind: IdeKind, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
     loop {
         if !is_running(kind) {
             return true;
@@ -257,7 +269,7 @@ fn wait_until_stopped(kind: IdeKind, timeout: Duration) -> bool {    let deadlin
     }
 }
 
-fn launch(kind: IdeKind) -> Result<(), String> {
+pub fn launch(kind: IdeKind) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
         // 优先按 .app 路径打开；找不到则按 Bundle ID 让 LaunchServices 定位

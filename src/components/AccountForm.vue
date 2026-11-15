@@ -26,6 +26,14 @@
         <span class="w-px h-6 bg-gray-700 mx-1"></span>
 
         <button
+          @click="handleCheckinAll"
+          :disabled="store.checkingIn || !store.hasAccounts"
+          class="px-4 py-2 bg-green-600 text-white rounded text-sm font-medium hover:bg-green-500 whitespace-nowrap disabled:opacity-50"
+        >
+          {{ store.checkingIn ? `签到中… ${store.checkinDone}/${store.accounts.length}` : '一键领取签到' }}
+        </button>
+
+        <button
           @click="handleExport"
           :disabled="exporting || !store.hasAccounts"
           class="px-4 py-2 bg-dark-700 text-gray-200 rounded text-sm hover:bg-dark-600 whitespace-nowrap disabled:opacity-50"
@@ -61,6 +69,10 @@
         已{{ lastImport.updated ? '刷新' : '添加' }}：{{ lastImport.label }}
         <div v-if="lastImport.expires_at" class="text-gray-500">凭证有效期至 {{ lastImport.expires_at.slice(0, 10) }}</div>
       </div>
+      <div v-if="lastCheckin" class="text-green-400">
+        签到完成：<span class="text-green-300">成功 {{ lastCheckin.claimed }} 个</span><template v-if="lastCheckin.already">，已领过 {{ lastCheckin.already }} 个</template><template v-if="lastCheckin.noCampaign">，无活动 {{ lastCheckin.noCampaign }} 个</template><template v-if="lastCheckin.failed">，<span class="text-red-400">失败 {{ lastCheckin.failed }} 个</span></template>
+        <div v-if="lastCheckin.totalCredits" class="text-gray-500">本次共领取 {{ lastCheckin.totalCredits }} Credits</div>
+      </div>
       <div v-if="lastExport?.path" class="text-blue-400">
         已导出 {{ lastExport.count }} 个账号（{{ formatSize(lastExport.bytes) }}）
         <div class="flex items-center justify-end gap-2 mt-0.5">
@@ -79,16 +91,84 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { useAppStore } from '../stores/app'
-import type { LocalAccountInfo, ExportResult, ImportResult } from '../types'
+import { useToast, toErrMsg } from '../composables/useToast'
+import type { LocalAccountInfo, ExportResult, ImportResult, CheckinResult } from '../types'
 
 const store = useAppStore()
+const toast = useToast()
 const lastImport = ref<LocalAccountInfo | null>(null)
 const lastExport = ref<ExportResult | null>(null)
 const lastImportFile = ref<ImportResult | null>(null)
+const lastCheckin = ref<{ claimed: number; already: number; noCampaign: number; failed: number; totalCredits: number; details: string } | null>(null)
 const includeTokens = ref(true)
 const restoreCurrent = ref(true)
 const exporting = ref(false)
 const importing = ref(false)
+
+const CHECKIN_STATUS_TEXT: Record<CheckinResult['status'], string> = {
+  claimed: '✅',
+  already: '☑️',
+  no_campaign: '⚠️',
+  error: '❌',
+}
+
+function summarizeCheckin(results: CheckinResult[]) {
+  const claimed = results.filter(r => r.status === 'claimed')
+  const already = results.filter(r => r.status === 'already').length
+  const noCampaign = results.filter(r => r.status === 'no_campaign').length
+  const failed = results.filter(r => r.status === 'error').length
+  const totalCredits = claimed.reduce((sum, r) => sum + (r.amount || 0), 0)
+  const details = results
+    .map(r => {
+      const extra =
+        r.status === 'claimed'
+          ? ` +${r.amount} Credits${r.expires_at ? `（有效期至 ${r.expires_at}）` : ''}`
+          : ''
+      const msg = ['already', 'no_campaign', 'error'].includes(r.status) ? ` ${r.message}` : ''
+      return `${CHECKIN_STATUS_TEXT[r.status] || '·'} ${r.label}${extra}${msg}`
+    })
+    .join('\n')
+  return { claimed: claimed.length, already, noCampaign, failed, totalCredits, details }
+}
+
+async function handleCheckinAll() {
+  if (store.checkingIn) return
+  try {
+    const results = await store.checkinAll()
+    if (!results.length) {
+      toast.warning('没有可签到的账号', '请先在「账号切换」里导入账号')
+      return
+    }
+    lastCheckin.value = summarizeCheckin(results)
+    const s = lastCheckin.value
+
+    // 整体结果 toast
+    if (s.claimed > 0) {
+      toast.success(
+        `签到完成：成功 ${s.claimed} 个，共领取 ${s.totalCredits} Credits`,
+        `已领过 ${s.already} · 无活动 ${s.noCampaign} · 失败 ${s.failed}`
+      )
+    } else if (s.failed > 0) {
+      toast.error(`签到完成：${s.failed} 个账号失败`, s.details)
+    } else {
+      toast.info(
+        `签到完成：本次无可领取（已领过 ${s.already} · 无活动 ${s.noCampaign}）`,
+        s.already + s.noCampaign > 0 ? undefined : '所有账号均已签到'
+      )
+    }
+
+    // 逐账号失败/异常原因单独弹 toast，方便定位
+    for (const r of results) {
+      if (r.status === 'error') {
+        toast.error(`${r.label} 签到失败`, r.message)
+      } else if (r.status === 'no_campaign') {
+        toast.warning(`${r.label} 无可用签到活动`, r.message)
+      }
+    }
+  } catch (e: unknown) {
+    toast.error('一键签到失败', toErrMsg(e))
+  }
+}
 
 async function handleImportLocal() {
   if (store.importing) return
@@ -96,9 +176,9 @@ async function handleImportLocal() {
   try {
     const info = await store.importLocalAccount()
     lastImport.value = info
-    alert(`${info.updated ? '已刷新' : '已添加'}账号：${info.label}`)
-  } catch (e: any) {
-    alert('读取失败: ' + (e?.message || e))
+    toast.success(`${info.updated ? '已刷新' : '已添加'}账号`, info.label)
+  } catch (e: unknown) {
+    toast.error('读取当前登录账号失败', toErrMsg(e))
   } finally {
     store.importing = false
   }
@@ -112,10 +192,9 @@ async function handleExport() {
     const r = await store.exportAccounts(includeTokens.value)
     if (!r.saved) return
     lastExport.value = r
-    alert(`已导出 ${r.count} 个账号\n\n${r.path}`)
-  } catch (e: any) {
-    const msg = typeof e === 'string' ? e : (e?.message || JSON.stringify(e))
-    alert('导出失败: ' + msg)
+    toast.success(`已导出 ${r.count} 个账号（${formatSize(r.bytes)}）`, r.path || undefined)
+  } catch (e: unknown) {
+    toast.error('导出备份失败', toErrMsg(e))
   } finally {
     exporting.value = false
   }
@@ -128,15 +207,10 @@ async function handleImport() {
     const r = await store.importAccounts(restoreCurrent.value)
     if (!r.imported) return
     lastImportFile.value = r
-    const lines = [
-      `已从备份导入 ${r.total} 个账号`,
-      `新增 ${r.added} 个 · 更新 ${r.updated} 个${r.skipped ? ` · 跳过 ${r.skipped} 个（缺凭证）` : ''}`,
-    ]
-    if (r.restored_current) lines.push(`当前账号：${r.restored_current}`)
-    alert(lines.join('\n'))
-  } catch (e: any) {
-    const msg = typeof e === 'string' ? e : (e?.message || JSON.stringify(e))
-    alert('导入失败: ' + msg)
+    const summary = `新增 ${r.added} · 更新 ${r.updated}${r.skipped ? ` · 跳过 ${r.skipped}（缺凭证）` : ''}${r.restored_current ? ` · 当前账号：${r.restored_current}` : ''}`
+    toast.success(`已从备份导入 ${r.total} 个账号`, summary)
+  } catch (e: unknown) {
+    toast.error('导入备份失败', toErrMsg(e))
   } finally {
     importing.value = false
   }

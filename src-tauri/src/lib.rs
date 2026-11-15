@@ -1,4 +1,5 @@
 mod auth;
+mod checkin;
 mod commands;
 mod error;
 mod local_account;
@@ -6,6 +7,9 @@ mod process;
 mod quota;
 mod state;
 mod tray;
+
+// 供 examples / 集成测试使用
+pub use auth::token;
 
 use state::AppState;
 use tauri::Manager;
@@ -46,13 +50,17 @@ pub fn run() {
             commands::account_cmd::list_accounts,
             commands::account_cmd::remove_account,
             commands::account_cmd::switch_account,
+            commands::account_cmd::activate_account,
             commands::account_cmd::import_local_account,
             commands::backup_cmd::export_accounts,
             commands::backup_cmd::import_accounts,
             commands::ide_cmd::get_ide_status,
             commands::ide_cmd::restart_ide,
+            commands::ide_cmd::restore_auth_backup,
             commands::quota_cmd::check_quota,
             commands::quota_cmd::check_all_quotas,
+            commands::checkin_cmd::checkin_account,
+            commands::checkin_cmd::checkin_all,
             commands::app_cmd::get_app_status,
             commands::app_cmd::open_external,
             commands::app_cmd::reveal_path,

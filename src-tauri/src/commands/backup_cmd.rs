@@ -22,6 +22,11 @@ pub struct ExportedAccount {
     /// 仅在「包含凭证」模式下写入
     #[serde(skip_serializing_if = "Option::is_none")]
     pub token: Option<String>,
+    /// 完整登录数据（auth.v1.dat 明文），同样只在含凭证时写入
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auth_blob: Option<String>,
+    #[serde(default)]
+    pub ide_kind: String,
 }
 
 #[derive(Serialize)]
@@ -70,6 +75,12 @@ fn build_payload(accounts: Vec<crate::auth::token::AccountToken>, include_tokens
                 quota_total: a.quota_total,
                 is_current: a.status == "current",
                 token: if include_tokens { Some(a.token) } else { None },
+                auth_blob: if include_tokens && !a.auth_blob.is_empty() {
+                    Some(a.auth_blob)
+                } else {
+                    None
+                },
+                ide_kind: a.ide_kind,
             })
             .collect(),
     }
@@ -114,10 +125,15 @@ pub async fn export_accounts(
         dialog = dialog.set_directory(dir);
     }
 
-    let picked = dialog.blocking_save_file();
+    // 注意：blocking_save_file 不能在 async 命令里调用（会死锁卡住），
+    // 必须用回调式 API + oneshot channel 等待结果。
+    let (tx, rx) = tokio::sync::oneshot::channel::<Option<tauri_plugin_dialog::FilePath>>();
+    dialog.save_file(move |picked| {
+        let _ = tx.send(picked);
+    });
 
-    // 用户取消
-    let Some(target) = picked else {
+    // 用户取消（回调收到 None）
+    let Ok(Some(target)) = rx.await else {
         return Ok(ExportResult {
             saved: false,
             path: None,
@@ -189,6 +205,8 @@ mod tests {
             expire_date: "2026-12-11".into(),
             quota_used: Some(447),
             quota_total: Some(2000),
+            auth_blob: String::new(),
+            ide_kind: "cn".into(),
             machine_token: String::new(),
             machine_id: String::new(),
             machine_code: String::new(),
@@ -289,6 +307,8 @@ mod tests {
                 quota_total: Some(3000.0),
                 is_current: true,
                 token: "new-token".into(),
+                auth_blob: r#"{"token":"new-token"}"#.into(),
+                ide_kind: "cn".into(),
             },
             // 全新账号（有 token）→ 新增
             RawAccount {
@@ -386,6 +406,10 @@ struct RawAccount {
     is_current: bool,
     #[serde(default)]
     token: String,
+    #[serde(default, alias = "authBlob", alias = "auth_json")]
+    auth_blob: String,
+    #[serde(default, alias = "ideKind")]
+    ide_kind: String,
 }
 
 #[derive(Serialize)]
@@ -414,6 +438,8 @@ impl RawAccount {
             expire_date: self.expire_date,
             quota_used: self.quota_used.map(|v| v.round().max(0.0) as u64),
             quota_total: self.quota_total.map(|v| v.round().max(0.0) as u64),
+            auth_blob: self.auth_blob,
+            ide_kind: self.ide_kind,
             machine_token: String::new(),
             machine_id: String::new(),
             machine_code: String::new(),
@@ -466,7 +492,14 @@ pub async fn import_accounts(
         dialog = dialog.set_directory(dir);
     }
 
-    let Some(picked) = dialog.blocking_pick_file() else {
+    // 同样不能用 blocking_pick_file（async 命令里会死锁），改回调式 API
+    let (tx, rx) = tokio::sync::oneshot::channel::<Option<tauri_plugin_dialog::FilePath>>();
+    dialog.pick_file(move |picked| {
+        let _ = tx.send(picked);
+    });
+
+    // 用户取消
+    let Ok(Some(picked)) = rx.await else {
         return Ok(ImportResult {
             imported: false,
             path: None,

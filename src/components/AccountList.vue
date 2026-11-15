@@ -6,7 +6,7 @@
         <h2 class="text-white font-semibold text-sm">账号列表</h2>
         <span class="text-blue-400 text-xs">{{ accounts.length }}</span>
       </div>
-      <span class="text-gray-500 text-xs">「接入」可标记当前账号，并顺手重启 Qoder CN / Qoder</span>
+      <span class="text-gray-500 text-xs">「接入」= 写入该账号登录态并重启对应 IDE</span>
     </div>
 
     <!-- 表格区域 -->
@@ -17,6 +17,7 @@
             <th class="py-2 px-3 text-left w-10">#</th>
             <th class="py-2 px-3 text-left">名称</th>
             <th class="py-2 px-3 text-left">邮箱</th>
+            <th class="py-2 px-3 text-left w-16">IDE</th>
             <th class="py-2 px-3 text-left w-24">类型</th>
             <th class="py-2 px-3 text-left w-28">到期</th>
             <th class="py-2 px-3 text-left w-28">剩余用量</th>
@@ -35,6 +36,12 @@
               {{ getDisplayName(account) }}
             </td>
             <td class="py-2.5 px-3 text-gray-400">{{ account.email || '-' }}</td>
+            <td class="py-2.5 px-3">
+              <span v-if="account.ide_kind" class="text-xs px-1.5 py-0.5 rounded bg-gray-700/60 text-gray-300">
+                {{ account.ide_kind === 'intl' ? 'Qoder' : 'CN' }}
+              </span>
+              <span v-else class="text-gray-600">-</span>
+            </td>
             <td class="py-2.5 px-3 text-gray-400">{{ account.user_type || '-' }}</td>
             <td class="py-2.5 px-3 text-gray-400">{{ account.expire_date || '-' }}</td>
             <td class="py-2.5 px-3" :class="getBalanceClass(account)">{{ getBalanceText(account) }}</td>
@@ -49,6 +56,11 @@
                   :disabled="store.checkingIds.includes(account.id)"
                   class="text-blue-400 text-xs hover:text-blue-300 disabled:text-gray-500 disabled:cursor-wait"
                 >{{ store.checkingIds.includes(account.id) ? '查询中…' : '查用量' }}</button>
+                <button
+                  @click="handleCheckin(account)"
+                  :disabled="store.checkingIn"
+                  class="text-green-400 text-xs hover:text-green-300 disabled:text-gray-500 disabled:cursor-wait"
+                >{{ store.checkingIn ? '签到中…' : '签到' }}</button>
                 <button @click="handleCopy(account)" class="text-gray-400 text-xs hover:text-gray-200">复制邮箱</button>
                 <button @click="handleRemove(account)" class="text-red-400 text-xs hover:text-red-300">删除</button>
               </div>
@@ -75,10 +87,12 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { useAppStore } from '../stores/app'
+import { useToast, toErrMsg } from '../composables/useToast'
 import SwitchDialog from './SwitchDialog.vue'
 import type { AccountToken } from '../types'
 
 const store = useAppStore()
+const toast = useToast()
 const accounts = computed(() => store.accounts)
 const dialogOpen = ref(false)
 const activeAccount = ref<AccountToken | null>(null)
@@ -89,17 +103,16 @@ function handleSwitch(account: AccountToken) {
 }
 
 function onSwitched(message: string) {
-  alert(message + '\n\n记得在 IDE 里用该账号登录，登录后回到这里点「读取当前登录账号」刷新凭证。')
+  toast.success('接入完成', message)
 }
 
 async function handleCheckQuota(id: string) {
   try {
     const r = await store.checkQuota(id)
-    if (r.error) alert('查询失败: ' + r.error)
+    if (r.error) toast.error('查询用量失败', r.error)
     else store.activeTab = 'usage'
-  } catch (e: any) {
-    const msg = typeof e === 'string' ? e : (e?.message || JSON.stringify(e))
-    alert('查询用量失败: ' + msg)
+  } catch (e: unknown) {
+    toast.error('查询用量失败', toErrMsg(e))
   }
 }
 
@@ -107,9 +120,31 @@ async function handleCopy(account: AccountToken) {
   await store.copyText(account.email || account.label)
 }
 
+async function handleCheckin(account: AccountToken) {
+  try {
+    const r = await store.checkinOne(account.id)
+    if (r.status === 'claimed') {
+      toast.success(`${r.label} 领取成功 +${r.amount} Credits`, r.expires_at ? `有效期至 ${r.expires_at}` : undefined)
+    } else if (r.status === 'already') {
+      toast.info(`${r.label} 今日已领取`)
+    } else if (r.status === 'no_campaign') {
+      toast.warning(`${r.label} 无可用签到活动`, r.message)
+    } else {
+      toast.error(`${r.label} 签到失败`, r.message)
+    }
+  } catch (e: unknown) {
+    toast.error(`${account.label} 签到失败`, toErrMsg(e))
+  }
+}
+
 async function handleRemove(account: AccountToken) {
   if (!confirm(`确定从账号库删除「${account.label}」？`)) return
-  await store.removeAccount(account.id)
+  try {
+    await store.removeAccount(account.id)
+    toast.success('已删除账号', account.label)
+  } catch (e: unknown) {
+    toast.error('删除账号失败', toErrMsg(e))
+  }
 }
 
 function getStatusText(account: AccountToken) {

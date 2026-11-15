@@ -73,9 +73,11 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { useAppStore } from '../stores/app'
+import { useToast, toErrMsg } from '../composables/useToast'
 import type { QuotaResult } from '../types'
 
 const store = useAppStore()
+const toast = useToast()
 const updatedAt = ref('')
 
 const quotas = computed(() => store.quotas)
@@ -84,8 +86,8 @@ async function refresh() {
   try {
     await store.checkAllQuotas()
     updatedAt.value = new Date().toLocaleTimeString()
-  } catch (e: any) {
-    alert('查询用量失败: ' + (e?.message || e))
+  } catch (e: unknown) {
+    toast.error('查询用量失败', toErrMsg(e))
   }
 }
 

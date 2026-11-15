@@ -1,7 +1,6 @@
 export interface AccountToken {
   id: string
   label: string
-  token: string
   user_id: string
   email: string
   name: string
@@ -10,6 +9,12 @@ export interface AccountToken {
   expire_date: string
   quota_used?: number | null
   quota_total?: number | null
+  /** 该账号属于哪个 IDE 版本 */
+  ide_kind: 'cn' | 'intl' | ''
+  /** 是否具备一键切换所需的登录数据 */
+  can_activate: boolean
+  /** 是否有完整登录数据（含 refreshToken）。缺失时切换会被后端拒绝（避免 IDE 校验清除导致掉登录） */
+  has_full_credentials: boolean
 }
 
 /** 应用状态（不含任何代理/证书信息） */
@@ -58,13 +63,37 @@ export interface SwitchInfo {
   email: string
 }
 
+/** 单账号签到结果 */
+export interface CheckinResult {
+  account_id: string
+  label: string
+  /** claimed = 领取成功 / already = 今日已领 / no_campaign = 无可用活动 / error = 失败 */
+  status: 'claimed' | 'already' | 'no_campaign' | 'error'
+  amount: number
+  expires_at: string
+  message: string
+  api_base: string
+}
+
 /** 从本机 Qoder IDE 登录态导入的账号信息 */
 export interface LocalAccountInfo {
   label: string
   user_id: string
   name: string
   expires_at: string
+  ide_kind: string
   updated: boolean
+}
+
+/** 真正切换账号（写 IDE 登录态并重启）的结果 */
+export interface ActivateInfo {
+  id: string
+  label: string
+  email: string
+  ide_kind: string
+  full_credentials: boolean
+  verified: boolean
+  message: string
 }
 
 /** 导出备份的结果 */

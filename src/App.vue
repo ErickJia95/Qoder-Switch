@@ -33,6 +33,9 @@
         打开 qoder.cn 用量页
       </button>
     </footer>
+
+    <!-- 全局 Toast 通知 -->
+    <ToastHost />
   </div>
 </template>
 
@@ -44,6 +47,7 @@ import AccountForm from './components/AccountForm.vue'
 import AccountList from './components/AccountList.vue'
 import UsagePanel from './components/UsagePanel.vue'
 import NavItem from './components/NavItem.vue'
+import ToastHost from './components/ToastHost.vue'
 
 const store = useAppStore()
 

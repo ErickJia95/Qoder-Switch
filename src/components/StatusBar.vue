@@ -38,10 +38,12 @@
 import { computed, onMounted, ref } from 'vue'
 import { getVersion } from '@tauri-apps/api/app'
 import { useAppStore } from '../stores/app'
+import { useToast, toErrMsg } from '../composables/useToast'
 import type { IdeKind } from '../types'
 
 const store = useAppStore()
-const appVersion = ref('2.3.0')
+const toast = useToast()
+const appVersion = ref('2.4.0')
 const busy = ref<IdeKind | null>(null)
 
 const ides = computed(() => [
@@ -74,16 +76,16 @@ async function restart(kind: IdeKind, name: string, running: boolean) {
   busy.value = kind
   try {
     const r = await store.restartIde(kind)
-    if (!r.launched) alert(r.message)
-  } catch (e: any) {
-    const msg = typeof e === 'string' ? e : (e?.message || JSON.stringify(e))
-    alert('操作失败: ' + msg)
+    if (!r.launched) toast.warning(`${name} 未能启动`, r.message)
+    else toast.success(`${name} 已${running ? '重启' : '启动'}`)
+  } catch (e: unknown) {
+    toast.error(`${name} 操作失败`, toErrMsg(e))
   } finally {
     busy.value = null
   }
 }
 
 async function checkUpdate() {
-  alert(`当前版本 v${appVersion.value}，自动更新将在后续版本启用`)
+  toast.info(`当前版本 v${appVersion.value}`, '自动更新将在后续版本启用')
 }
 </script>
